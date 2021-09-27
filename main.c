@@ -21,30 +21,22 @@
 #define WMU_AUTO_COLSIZE       WM_USER + 5
 #define WMU_RESET_CACHE        WM_USER + 6
 
-#define IDC_TABLELIST          100
-#define IDC_DATAGRID           101
+#define IDC_MAIN            100
+#define IDC_TABLELIST          101
+#define IDC_DATAGRID           102
 #define IDC_HEADER_EDIT        1000
 #define IDC_HEADER_STATIC      2000
 
 #define MAX_TEXT_LENGTH        32000
 #define CACHE_SIZE             200
 
-TCHAR** cache[CACHE_SIZE] = {0};
-int cacheOffset = -1;
-char tablename8[1024] = {0};
-char where8[MAX_TEXT_LENGTH] = {0};
-int orderBy = 0;
+//TCHAR** cache[CACHE_SIZE] = {0};
 
-HWND hMainWnd, hListWnd, hDataWnd;
 LRESULT CALLBACK cbNewMain (HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 LRESULT CALLBACK cbNewFilterEdit (HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 LRESULT CALLBACK cbNewFilterStatic (HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 int Header_GetItemText(HWND hWnd, int i, TCHAR* pszText, int cchTextMax);
 void bindFilterValues(HWND hHeader, sqlite3_stmt* stmt);
-
-WNDPROC cbOldMain, cbOldFilterEdit, cbOldFilterStatic;
-sqlite3 *db;
-HFONT hFont;
 
 TCHAR* utf8to16(const char* in) {
 	TCHAR *out;
@@ -80,28 +72,38 @@ HWND APIENTRY ListLoad (HWND hListerWnd, char* fileToLoad, int showFlags) {
 	MultiByteToWideChar(CP_ACP, 0, fileToLoad, -1, fileToLoad16, size);
 	char* fileToLoad8 = utf16to8(fileToLoad16);
 
-	BOOL rc = SQLITE_OK == sqlite3_open_v2(fileToLoad8, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI, NULL);
-	free(fileToLoad16);
-	free(fileToLoad8);
-
-	if (!rc) {
+	sqlite3 *db = 0;
+	if (SQLITE_OK != sqlite3_open_v2(fileToLoad8, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI, NULL)) {
 		MessageBox(hListerWnd, TEXT("Error to open database"), fileToLoad16, MB_OK);
+		free(fileToLoad16);
+		free(fileToLoad8);
 		return NULL;
 	}
+	free(fileToLoad16);
+	free(fileToLoad8);
 
 	INITCOMMONCONTROLSEX icex;
 	icex.dwSize = sizeof(icex);
 	icex.dwICC = ICC_LISTVIEW_CLASSES;
 	InitCommonControlsEx(&icex);
 
-	hMainWnd = CreateWindow(WC_STATIC, TEXT("Hello"), WS_CHILD | WS_VISIBLE | SS_SUNKEN,
-		0, 0, 100, 100, hListerWnd, NULL, GetModuleHandle(0), NULL);
-	cbOldMain = (WNDPROC)SetWindowLongPtr(hMainWnd, GWLP_WNDPROC, (LONG_PTR)&cbNewMain);
+	HWND hMainWnd = CreateWindow(WC_STATIC, TEXT("sqlite-wlx"), WS_CHILD | WS_VISIBLE | SS_SUNKEN,
+		0, 0, 100, 100, hListerWnd, (HMENU)IDC_MAIN, GetModuleHandle(0), NULL);
 
-	hListWnd = CreateWindow(TEXT("LISTBOX"), NULL, WS_CHILD | WS_VISIBLE | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT | WS_VSCROLL,
+	SetProp(hMainWnd, TEXT("WNDPROC"), (HANDLE)SetWindowLongPtr(hMainWnd, GWLP_WNDPROC, (LONG_PTR)&cbNewMain));
+	SetProp(hMainWnd, TEXT("CACHE"), calloc(CACHE_SIZE, sizeof(TCHAR*)));
+	SetProp(hMainWnd, TEXT("DB"), (HANDLE)db);
+	SetProp(hMainWnd, TEXT("ORDERBY"), calloc(1, sizeof(int)));
+	SetProp(hMainWnd, TEXT("CACHEOFFSET"), calloc(1, sizeof(int)));
+	SetProp(hMainWnd, TEXT("TABLENAME8"), calloc(1024, sizeof(char)));
+	SetProp(hMainWnd, TEXT("WHERE8"), calloc(MAX_TEXT_LENGTH, sizeof(char)));
+
+	*(int*)GetProp(hMainWnd, TEXT("CACHEOFFSET")) = -1;
+
+	HWND hListWnd = CreateWindow(TEXT("LISTBOX"), NULL, WS_CHILD | WS_VISIBLE | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT | WS_VSCROLL,
 		0, 0, 100, 100, hMainWnd, (HMENU)IDC_TABLELIST, GetModuleHandle(0), NULL);
 
-	hDataWnd = CreateWindow(WC_LISTVIEW, NULL, WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SHOWSELALWAYS | LVS_OWNERDATA,
+	HWND hDataWnd = CreateWindow(WC_LISTVIEW, NULL, WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SHOWSELALWAYS | LVS_OWNERDATA,
 		205, 0, 100, 100, hMainWnd, (HMENU)IDC_DATAGRID, GetModuleHandle(0), NULL);
 	ListView_SetExtendedListViewStyle(hDataWnd, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES /*| LVS_EX_AUTOSIZECOLUMNS*/ | LVS_EX_LABELTIP);
 
@@ -109,9 +111,10 @@ HWND APIENTRY ListLoad (HWND hListerWnd, char* fileToLoad, int showFlags) {
 	LONG_PTR styles = GetWindowLongPtr(hHeader, GWL_STYLE);
 	SetWindowLongPtr(hHeader, GWL_STYLE, styles | HDS_FILTERBAR);
 
-	hFont = CreateFont (16, 0, 0, 0, FW_DONTCARE, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Arial");
+	HFONT hFont = CreateFont (16, 0, 0, 0, FW_DONTCARE, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Arial");
 	SendMessage(hListWnd, WM_SETFONT, (LPARAM)hFont, TRUE);
 	SendMessage(hDataWnd, WM_SETFONT, (LPARAM)hFont, TRUE);
+	SetProp(hMainWnd, TEXT("FONT"), hFont);
 
 	sqlite3_stmt *stmt;
 	sqlite3_prepare_v2(db, "select name from sqlite_master where type in ('table', 'view') order by type, name", -1, &stmt, 0);
@@ -129,10 +132,26 @@ HWND APIENTRY ListLoad (HWND hListerWnd, char* fileToLoad, int showFlags) {
 	return hMainWnd;
 }
 
-void __stdcall ListCloseWindow(HWND hListerWnd) {
-	SendMessage(hMainWnd, WMU_RESET_CACHE, 0, 0);
+void __stdcall ListCloseWindow(HWND hWnd) {
+	SendMessage(hWnd, WMU_RESET_CACHE, 0, 0);
+	sqlite3* db = (sqlite3*)GetProp(hWnd, TEXT("DB"));
 	sqlite3_close(db);
-	DestroyWindow(hMainWnd);
+
+	free((TCHAR***)GetProp(hWnd, TEXT("CACHE")));
+	free((int*)GetProp(hWnd, TEXT("ORDERBY")));
+	free((int*)GetProp(hWnd, TEXT("CACHEOFFSET")));
+	free((char*)GetProp(hWnd, TEXT("TABLENAME8")));
+	free((char*)GetProp(hWnd, TEXT("WHERE8")));
+
+	RemoveProp(hWnd, TEXT("WNDPROC"));
+	RemoveProp(hWnd, TEXT("DB"));
+	RemoveProp(hWnd, TEXT("ORDERBY"));
+	RemoveProp(hWnd, TEXT("CACHEOFFSET"));
+	RemoveProp(hWnd, TEXT("TABLENAME8"));
+	RemoveProp(hWnd, TEXT("WHERE8"));
+	RemoveProp(hWnd, TEXT("FONT"));
+
+	DestroyWindow(hWnd);
 	return;
 }
 
@@ -149,14 +168,16 @@ LRESULT CALLBACK cbNewMain(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
 		case WM_SIZE: {
 			RECT rc;
-			GetClientRect(hMainWnd, &rc);
+			GetClientRect(hWnd, &rc);
+			HWND hListWnd = GetDlgItem(hWnd, IDC_TABLELIST);
+			HWND hDataWnd = GetDlgItem(hWnd, IDC_DATAGRID);
 			SetWindowPos(hListWnd, 0, 0, 0, 200, rc.bottom, SWP_NOMOVE | SWP_NOZORDER);
 			SetWindowPos(hDataWnd, 0, 0, 0, rc.right - 205, rc.bottom, SWP_NOMOVE | SWP_NOZORDER);
 		}
 		break;
 
 		case WM_COMMAND: {
-			if ((HWND)lParam == hListWnd && HIWORD(wParam) == LBN_SELCHANGE)
+			if (LOWORD(wParam) == IDC_TABLELIST && HIWORD(wParam) == LBN_SELCHANGE)
 				SendMessage(hWnd, WMU_UPDATE_GRID, 0, 0);
 		}
 		break;
@@ -165,16 +186,24 @@ LRESULT CALLBACK cbNewMain(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 			NMHDR* pHdr = (LPNMHDR)lParam;
 			if (pHdr->idFrom == IDC_DATAGRID && pHdr->code == LVN_GETDISPINFO) {
 				HWND hDataWnd = pHdr->hwndFrom;
+				sqlite3* db = (sqlite3*)GetProp(hWnd, TEXT("DB"));
+				int orderBy = *(int*)GetProp(hWnd, TEXT("ORDERBY"));
 
 				LV_DISPINFO* pDispInfo = (LV_DISPINFO*)lParam;
 				LV_ITEM* pItem= &(pDispInfo)->item;
-			   	if (pItem->iItem < cacheOffset || pItem->iItem > cacheOffset + CACHE_SIZE || cacheOffset == -1) {
+				int* pCacheOffset = (int*)GetProp(hWnd, TEXT("CACHEOFFSET"));
+				TCHAR*** cache = (TCHAR***)GetProp(hWnd, TEXT("CACHE"));
+
+			   	if (pItem->iItem < *pCacheOffset || pItem->iItem > *pCacheOffset + CACHE_SIZE || *pCacheOffset == -1) {
 			   		SendMessage(hWnd, WMU_RESET_CACHE, 0, 0);
-			   		cacheOffset = pItem->iItem;
+			   		*pCacheOffset = pItem->iItem;
 
 			   		HWND hHeader = ListView_GetHeader(hDataWnd);
 			   		int colCount = Header_GetItemCount(hHeader);
 					sqlite3_stmt *stmt;
+
+					char* tablename8 = (char*)GetProp(hWnd, TEXT("TABLENAME8"));
+					char* where8 = (char*)GetProp(hWnd, TEXT("WHERE8"));
 
 					char query8[1024 + strlen(tablename8) + strlen(where8)];
 					char orderBy8[32] = {0};
@@ -183,7 +212,7 @@ LRESULT CALLBACK cbNewMain(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 					if (orderBy < 0)
 						sprintf(orderBy8, "order by %i desc", -orderBy);
 
-					sprintf(query8, "select * from \"%s\" %s %s limit %i offset %i", tablename8, where8, orderBy8, CACHE_SIZE, cacheOffset);
+					sprintf(query8, "select * from \"%s\" %s %s limit %i offset %i", tablename8, where8, orderBy8, CACHE_SIZE, *pCacheOffset);
 					if (SQLITE_OK == sqlite3_prepare_v2(db, query8, -1, &stmt, 0)) {
 						bindFilterValues(hHeader, stmt);
 
@@ -204,22 +233,27 @@ LRESULT CALLBACK cbNewMain(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 			   	}
 
 				if(pItem->mask & LVIF_TEXT)
-					_tcsncpy(pItem->pszText, cache[pItem->iItem - cacheOffset][pItem->iSubItem], pItem->cchTextMax);
+					_tcsncpy(pItem->pszText, cache[pItem->iItem - *pCacheOffset][pItem->iSubItem], pItem->cchTextMax);
 			}
 
 			if (pHdr->idFrom == IDC_DATAGRID && pHdr->code == LVN_COLUMNCLICK) {
 				NMLISTVIEW* pLV = (NMLISTVIEW*)lParam;
 				int colNo = pLV->iSubItem + 1;
-				orderBy = colNo == orderBy || colNo == -orderBy ? -orderBy : colNo;
+				int* pOrderBy = (int*)GetProp(hWnd, TEXT("ORDERBY"));
+				int orderBy = *pOrderBy;
+				*pOrderBy = colNo == orderBy || colNo == -orderBy ? -orderBy : colNo;
 				SendMessage(hWnd, WMU_UPDATE_DATA, 0, 0);
 			}
 
-			if (pHdr->code == HDN_ITEMCHANGED && pHdr->hwndFrom == ListView_GetHeader(hDataWnd))
+			if (pHdr->code == HDN_ITEMCHANGED && pHdr->hwndFrom == ListView_GetHeader(GetDlgItem(hWnd, IDC_DATAGRID)))
 				SendMessage(hWnd, WMU_UPDATE_COLSIZE, 0, 0);
 		}
 		break;
 
 		case WMU_UPDATE_GRID: {
+			HWND hListWnd = GetDlgItem(hWnd, IDC_TABLELIST);
+			HWND hDataWnd = GetDlgItem(hWnd, IDC_DATAGRID);
+			sqlite3* db = (sqlite3*)GetProp(hWnd, TEXT("DB"));
 			SendMessage(hDataWnd, WM_SETREDRAW, FALSE, 0);
 			HWND hHeader = ListView_GetHeader(hDataWnd);
 
@@ -236,7 +270,7 @@ LRESULT CALLBACK cbNewMain(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 			for (int colNo = 0; colNo < colCount; colNo++)
 				ListView_DeleteColumn(hDataWnd, colCount - colNo - 1);
 
-
+			char* tablename8 = (char*)GetProp(hWnd, TEXT("TABLENAME8"));
 			int pos = ListBox_GetCurSel(hListWnd);
 			TCHAR name16[256];
 			ListBox_GetText(hListWnd, pos, name16);
@@ -280,16 +314,16 @@ LRESULT CALLBACK cbNewMain(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 					RECT rc;
 					Header_GetItemRect(hHeader, colNo, &rc);
 					HWND hEdit = CreateWindowEx(WS_EX_TOPMOST, WC_EDIT, NULL, ES_CENTER | ES_AUTOHSCROLL | WS_VISIBLE | WS_CHILD, 0, 0, 0, 0, hHeader, (HMENU)(INT_PTR)(IDC_HEADER_EDIT + colNo), GetModuleHandle(0), NULL);
-					SendMessage(hEdit, WM_SETFONT, (LPARAM)hFont, TRUE);
-					cbOldFilterEdit = (WNDPROC)SetWindowLongPtr(hEdit, GWLP_WNDPROC, (LONG_PTR)cbNewFilterEdit);
+					SendMessage(hEdit, WM_SETFONT, (LPARAM)GetProp(hWnd, TEXT("FONT")), TRUE);
+					SetProp(hEdit, TEXT("WNDPROC"), (HANDLE)SetWindowLongPtr(hEdit, GWLP_WNDPROC, (LONG_PTR)cbNewFilterEdit));
 					HWND hStatic = CreateWindowEx(WS_EX_TOPMOST, WC_STATIC, NULL, WS_VISIBLE | WS_CHILD | SS_WHITERECT, 0, 0, 0, 0, hHeader, (HMENU)(INT_PTR)(IDC_HEADER_STATIC + colNo), GetModuleHandle(0), NULL);
-					cbOldFilterStatic = (WNDPROC)SetWindowLongPtr(hStatic, GWLP_WNDPROC, (LONG_PTR)cbNewFilterStatic);
+					SetProp(hStatic, TEXT("WNDPROC"), (HANDLE)SetWindowLongPtr(hStatic, GWLP_WNDPROC, (LONG_PTR)cbNewFilterStatic));
 				}
 				SendMessage(hWnd, WMU_UPDATE_COLSIZE, 0, 0);
 			}
 			sqlite3_finalize(stmt);
 
-			orderBy = 0;
+			*(int*)GetProp(hWnd, TEXT("ORDERBY")) = 0;
 			SendMessage(hWnd, WMU_UPDATE_ROW_COUNT, 0, 0);
 			SendMessage(hWnd, WMU_UPDATE_DATA, 0, 0);
 			SendMessage(hDataWnd, WM_SETREDRAW, TRUE, 0);
@@ -299,15 +333,20 @@ LRESULT CALLBACK cbNewMain(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 		break;
 
 		case WMU_UPDATE_DATA: {
-			cacheOffset = -1;
+			HWND hDataWnd = GetDlgItem(hWnd, IDC_DATAGRID);
+			*(int*)GetProp(hWnd, TEXT("CACHEOFFSET")) = -1;
 			ListView_SetItemCount(hDataWnd, ListView_GetItemCount(hDataWnd));
 			UpdateWindow(hDataWnd);
 		}
 		break;
 
 		case WMU_UPDATE_ROW_COUNT: {
+			HWND hDataWnd = GetDlgItem(hWnd, IDC_DATAGRID);
 			HWND hHeader = ListView_GetHeader(hDataWnd);
 			int colCount = Header_GetItemCount(hHeader);
+			sqlite3* db = (sqlite3*)GetProp(hWnd, TEXT("DB"));
+			char* tablename8 = (char*)GetProp(hWnd, TEXT("TABLENAME8"));
+			char* where8 = (char*)GetProp(hWnd, TEXT("WHERE8"));
 
 			TCHAR where16[MAX_TEXT_LENGTH] = {0};
 			_tcscat(where16, TEXT("where (1 = 1) "));
@@ -347,16 +386,16 @@ LRESULT CALLBACK cbNewMain(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 			sqlite3_finalize(stmt);
 
 			if (rowCount == -1)
-				MessageBox(hMainWnd, TEXT("Error occured while fetching data"), NULL, MB_OK);
+				MessageBox(hWnd, TEXT("Error occured while fetching data"), NULL, MB_OK);
 			else
 				ListView_SetItemCount(hDataWnd, rowCount);
-
 
 			return rowCount;
 		}
 		break;
 
 		case WMU_UPDATE_COLSIZE: {
+			HWND hDataWnd = GetDlgItem(hWnd, IDC_DATAGRID);
 			HWND hHeader = ListView_GetHeader(hDataWnd);
 			int colCount = Header_GetItemCount(hHeader);
 			SendMessage(hHeader, WM_SIZE, 0, 0);
@@ -370,6 +409,7 @@ LRESULT CALLBACK cbNewMain(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 		break;
 
 		case WMU_AUTO_COLSIZE: {
+			HWND hDataWnd = GetDlgItem(hWnd, IDC_DATAGRID);
 			SendMessage(hDataWnd, WM_SETREDRAW, FALSE, 0);
 			HWND hHeader = ListView_GetHeader(hDataWnd);
 			int colCount = Header_GetItemCount(hHeader);
@@ -404,7 +444,8 @@ LRESULT CALLBACK cbNewMain(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
 		case WMU_RESET_CACHE: {
 			HWND hDataWnd = GetDlgItem(hWnd, IDC_DATAGRID);
-			cacheOffset = -1;
+			TCHAR*** cache = (TCHAR***)GetProp(hWnd, TEXT("CACHE"));
+			*(int*)GetProp(hWnd, TEXT("CACHEOFFSET")) = -1;
 			int colCount = Header_GetItemCount(ListView_GetHeader(hDataWnd));
 			if (colCount == 0)
 				return 0;
@@ -422,7 +463,7 @@ LRESULT CALLBACK cbNewMain(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 		break;
 	}
 
-	return CallWindowProc(cbOldMain, hWnd, msg, wParam, lParam);
+	return CallWindowProc((WNDPROC)GetProp(hWnd, TEXT("WNDPROC")), hWnd, msg, wParam, lParam);
 }
 
 LRESULT CALLBACK cbNewFilterEdit(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -437,6 +478,9 @@ LRESULT CALLBACK cbNewFilterEdit(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPar
 		case WM_KEYDOWN: {
 			if (wParam == VK_RETURN || wParam == VK_ESCAPE || wParam == VK_TAB) {
 				if (wParam == VK_RETURN) {
+					HWND hHeader = GetParent(hWnd);
+					HWND hDataWnd = GetParent(hHeader);
+					HWND hMainWnd = GetParent(hDataWnd);
 					SendMessage(hMainWnd, WMU_UPDATE_ROW_COUNT, 0, 0);
 					SendMessage(hMainWnd, WMU_UPDATE_DATA, 0, 0);
 				}
@@ -445,9 +489,14 @@ LRESULT CALLBACK cbNewFilterEdit(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPar
 			}
 		}
 		break;
+
+		case WM_DESTROY: {
+			RemoveProp(hWnd, TEXT("WNDPROC"));
+		}
+		break;
 	}
 
-	return CallWindowProc(cbOldFilterEdit, hWnd, msg, wParam, lParam);
+	return CallWindowProc((WNDPROC)GetProp(hWnd, TEXT("WNDPROC")), hWnd, msg, wParam, lParam);
 }
 
 LRESULT CALLBACK cbNewFilterStatic(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -479,7 +528,10 @@ LRESULT CALLBACK cbNewFilterStatic(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
 		return TRUE;
 	}
 
-	return CallWindowProc(cbOldFilterStatic, hWnd, msg, wParam, lParam);
+	if (msg == WM_DESTROY)
+		RemoveProp(hWnd, TEXT("WNDPROC"));
+
+	return CallWindowProc((WNDPROC)GetProp(hWnd, TEXT("WNDPROC")), hWnd, msg, wParam, lParam);
 }
 
 int Header_GetItemText(HWND hWnd, int i, TCHAR* pszText, int cchTextMax) {
