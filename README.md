@@ -3,6 +3,14 @@
 |[**Download the latest version**](https://github.com/little-brother/sqlite-wlx/releases/latest)|
 |-------------------------------------------------------------------------------------------|
 
+![View](sqlite-wlx.png)
+
+### Features
+* Column filters
+* Sort data by column click
+* Doesn't require SQLite library (built-in)
+* Supports huge tables
+
 ### Filters
 * Use ABC as a column filter to find rows containing "ABC"
 * Use =ABC to find rows with column values equal to "ABC"
