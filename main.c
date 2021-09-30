@@ -107,7 +107,8 @@ HWND APIENTRY ListLoad (HWND hListerWnd, char* fileToLoad, int showFlags) {
 	icex.dwICC = ICC_LISTVIEW_CLASSES;
 	InitCommonControlsEx(&icex);
 
-	HWND hMainWnd = CreateWindow(WC_STATIC, TEXT("sqlite-wlx"), WS_CHILD | WS_VISIBLE | SS_SUNKEN,
+	BOOL isStandalone = GetParent(hListerWnd) == HWND_DESKTOP;
+	HWND hMainWnd = CreateWindow(WC_STATIC, TEXT("sqlite-wlx"), WS_CHILD | WS_VISIBLE | (isStandalone ? SS_SUNKEN : 0),
 		0, 0, 100, 100, hListerWnd, (HMENU)IDC_MAIN, GetModuleHandle(0), NULL);
 
 	SetProp(hMainWnd, TEXT("WNDPROC"), (HANDLE)SetWindowLongPtr(hMainWnd, GWLP_WNDPROC, (LONG_PTR)&cbNewMain));
@@ -124,7 +125,7 @@ HWND APIENTRY ListLoad (HWND hListerWnd, char* fileToLoad, int showFlags) {
 	*(int*)GetProp(hMainWnd, TEXT("CACHEOFFSET")) = -1;
 	*(int*)GetProp(hMainWnd, TEXT("SPLITTERWIDTH")) = 200;
 
-	HWND hStatusWnd = CreateStatusWindow(WS_CHILD | WS_VISIBLE | SBARS_SIZEGRIP, NULL, hMainWnd, IDC_STATUSBAR);
+	HWND hStatusWnd = CreateStatusWindow(WS_CHILD | WS_VISIBLE |  (isStandalone ? SBARS_SIZEGRIP : 0), NULL, hMainWnd, IDC_STATUSBAR);
 	int sizes[6] = {75, 150, 200, 400, 500,-1};
 	SendMessage(hStatusWnd, SB_SETPARTS, 6, (LPARAM)&sizes);
 
