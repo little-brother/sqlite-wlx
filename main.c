@@ -419,7 +419,7 @@ LRESULT CALLBACK cbNewMain(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 				int* pCacheOffset = (int*)GetProp(hWnd, TEXT("CACHEOFFSET"));
 				TCHAR*** cache = (TCHAR***)GetProp(hWnd, TEXT("CACHE"));
 
-			   	if (pItem->iItem < *pCacheOffset || pItem->iItem > *pCacheOffset + CACHE_SIZE || *pCacheOffset == -1) {
+			   	if ((pItem->iItem < *pCacheOffset) || (pItem->iItem >= *pCacheOffset + CACHE_SIZE) || (*pCacheOffset == -1)) {
 			   		SendMessage(hWnd, WMU_RESET_CACHE, 0, 0);
 			   		*pCacheOffset = pItem->iItem;
 
