@@ -36,6 +36,7 @@
 #define IDM_FILTER_ROW         5002
 #define IDM_DARK_THEME         5003
 #define IDM_DDL                5010
+#define IDM_BLOB               5020
 
 #define SB_VERSION             0
 #define SB_TABLE_COUNT         1
@@ -51,7 +52,7 @@
 #define MAX_TABLE_LENGTH       2000
 
 #define APP_NAME               TEXT("sqlite-wlx")
-#define APP_VERSION            TEXT("0.9.7")
+#define APP_VERSION            TEXT("0.9.8")
 
 #define LCS_FINDFIRST          1
 #define LCS_MATCHCASE          2
@@ -84,6 +85,7 @@ void setClipboardText(const TCHAR* text);
 int ListView_AddColumn(HWND hListWnd, TCHAR* colName, int fmt);
 int Header_GetItemText(HWND hWnd, int i, TCHAR* pszText, int cchTextMax);
 void Menu_SetItemState(HMENU hMenu, UINT wID, UINT fState);
+BOOL saveFile(TCHAR* path, const TCHAR* filter, const TCHAR* defExt, HWND hWnd);
 
 BOOL APIENTRY DllMain (HANDLE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
 	if (ul_reason_for_call == DLL_PROCESS_ATTACH && iniPath[0] == 0) {
@@ -206,6 +208,7 @@ HWND APIENTRY ListLoadW (HWND hListerWnd, TCHAR* fileToLoad, int showFlags) {
 	SetProp(hMainWnd, TEXT("CACHEOFFSET"), calloc(1, sizeof(int)));
 	SetProp(hMainWnd, TEXT("TABLENAME8"), calloc(MAX_TABLE_LENGTH, sizeof(char)));
 	SetProp(hMainWnd, TEXT("WHERE8"), calloc(MAX_TEXT_LENGTH, sizeof(char)));
+	SetProp(hMainWnd, TEXT("HASROWID"), calloc(1, sizeof(int)));	
 	SetProp(hMainWnd, TEXT("ROWCOUNT"), calloc(1, sizeof(int)));
 	SetProp(hMainWnd, TEXT("TOTALROWCOUNT"), calloc(1, sizeof(int)));	
 	SetProp(hMainWnd, TEXT("COLNO"), calloc(1, sizeof(int)));
@@ -265,6 +268,10 @@ HWND APIENTRY ListLoadW (HWND hListerWnd, TCHAR* fileToLoad, int showFlags) {
 	HMENU hListMenu = CreatePopupMenu();
 	AppendMenu(hListMenu, MF_STRING, IDM_DDL, TEXT("View DDL"));
 	SetProp(hMainWnd, TEXT("LISTMENU"), hListMenu);
+
+	HMENU hBlobMenu = CreatePopupMenu();
+	AppendMenu(hBlobMenu, MF_STRING, IDM_BLOB, TEXT("Save to file"));
+	SetProp(hMainWnd, TEXT("BLOBMENU"), hBlobMenu);
 
 	int tCount = 0, vCount = 0;
 	sqlite3_stmt *stmt;
@@ -344,6 +351,7 @@ void __stdcall ListCloseWindow(HWND hWnd) {
 	free((int*)GetProp(hWnd, TEXT("CACHEOFFSET")));
 	free((char*)GetProp(hWnd, TEXT("TABLENAME8")));
 	free((char*)GetProp(hWnd, TEXT("WHERE8")));
+	free((int*)GetProp(hWnd, TEXT("HASROWID")));	
 	free((int*)GetProp(hWnd, TEXT("ROWCOUNT")));
 	free((int*)GetProp(hWnd, TEXT("TOTALROWCOUNT")));	
 	free((int*)GetProp(hWnd, TEXT("SPLITTERPOSITION")));
@@ -365,6 +373,7 @@ void __stdcall ListCloseWindow(HWND hWnd) {
 	DeleteObject(GetProp(hWnd, TEXT("SPLITTERBRUSH")));
 	DestroyMenu(GetProp(hWnd, TEXT("DATAMENU")));
 	DestroyMenu(GetProp(hWnd, TEXT("LISTMENU")));
+	DestroyMenu(GetProp(hWnd, TEXT("BLOBMENU")));	
 
 	RemoveProp(hWnd, TEXT("CACHESIZE"));
 	RemoveProp(hWnd, TEXT("FILTERROW"));
@@ -376,6 +385,7 @@ void __stdcall ListCloseWindow(HWND hWnd) {
 	RemoveProp(hWnd, TEXT("CACHEOFFSET"));
 	RemoveProp(hWnd, TEXT("TABLENAME8"));
 	RemoveProp(hWnd, TEXT("WHERE8"));
+	RemoveProp(hWnd, TEXT("HASROWID"));	
 	RemoveProp(hWnd, TEXT("ROWCOUNT"));
 	RemoveProp(hWnd, TEXT("TOTALROWCOUNT"));	
 	RemoveProp(hWnd, TEXT("SPLITTERPOSITION"));
@@ -396,6 +406,7 @@ void __stdcall ListCloseWindow(HWND hWnd) {
 	RemoveProp(hWnd, TEXT("SPLITTERBRUSH"));	
 	RemoveProp(hWnd, TEXT("DATAMENU"));
 	RemoveProp(hWnd, TEXT("LISTMENU"));	
+	RemoveProp(hWnd, TEXT("BLOBMENU"));
 
 	DestroyWindow(hWnd);
 }
@@ -592,6 +603,52 @@ LRESULT CALLBACK cbNewMain(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 					setClipboardText(buf);
 				}
 			}
+			
+			if (cmd == IDM_BLOB) {
+				HWND hGridWnd = GetDlgItem(hWnd, IDC_GRID);
+				HWND hHeader = ListView_GetHeader(hGridWnd);
+				
+				if (*(int*)GetProp(hWnd, TEXT("HASROWID")) == 0)
+					return MessageBox(hWnd, TEXT("The table doesn't have a rowid.\nBlob saving is not supported."), NULL, MB_OK);
+				
+				int rowNo = ListView_GetNextItem(hGridWnd, -1, LVNI_SELECTED);
+				if (rowNo != -1) {
+					int cacheSize = *(int*)GetProp(hWnd, TEXT("CACHESIZE"));
+					int* pCacheOffset = (int*)GetProp(hWnd, TEXT("CACHEOFFSET"));				
+					TCHAR*** cache = (TCHAR***)GetProp(hWnd, TEXT("CACHE"));
+
+					if (rowNo < *pCacheOffset || rowNo >= *pCacheOffset + cacheSize)
+						return 0;
+
+					int colCount = Header_GetItemCount(hHeader);				
+					sqlite3_stmt *stmt;
+
+					sqlite3* db = (sqlite3*)GetProp(hWnd, TEXT("DB"));
+					char* tablename8 = (char*)GetProp(hWnd, TEXT("TABLENAME8"));
+					int colNo = *(int*)GetProp(hWnd, TEXT("COLNO"));
+					TCHAR colName16[MAX_COLUMN_LENGTH + 1];
+					Header_GetItemText(hHeader, colNo, colName16, MAX_COLUMN_LENGTH + 1);
+					char* colName8 = utf16to8(colName16);
+					char query8[1024 + strlen(tablename8)];
+					sprintf(query8, "select %s from \"%s\" where rowid = %s", colName8, tablename8, cache[rowNo - *pCacheOffset][colCount]);
+					free(colName8);
+					
+					TCHAR path16[MAX_PATH] = {0};
+					TCHAR filter16[] = TEXT("Images (*.jpg, *.gif, *.png, *.bmp)\0*.jpg;*.jpeg;*.gif;*.png;*.bmp\0Binary(*.bin,*.dat)\0*.bin,*.dat\0All\0*.*\0");
+					if (SQLITE_OK == sqlite3_prepare_v2(db, query8, -1, &stmt, 0) && 
+						SQLITE_ROW == sqlite3_step(stmt) &&
+						saveFile(path16, filter16, TEXT(""), hWnd)) {
+						FILE *fp = _tfopen (path16, TEXT("wb"));
+						if (fp) {
+							fwrite(sqlite3_column_blob(stmt, 0), sqlite3_column_bytes(stmt, 0), 1, fp);
+							fclose(fp);						
+						} else {
+							MessageBox(hWnd, TEXT("Opening the file for writing is failed"), NULL, MB_OK);
+						}
+					}
+					sqlite3_finalize(stmt);
+				}	
+			}			
 
 			if (cmd == IDM_DDL) {
 				sqlite3* db = (sqlite3*)GetProp(hWnd, TEXT("DB"));
@@ -647,6 +704,7 @@ LRESULT CALLBACK cbNewMain(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
 					char* tablename8 = (char*)GetProp(hWnd, TEXT("TABLENAME8"));
 					char* where8 = (char*)GetProp(hWnd, TEXT("WHERE8"));
+					int hasRowid = *(int*)GetProp(hWnd, TEXT("HASROWID"));
 
 					char query8[1024 + strlen(tablename8) + strlen(where8)];
 					char orderBy8[32] = {0};
@@ -655,19 +713,22 @@ LRESULT CALLBACK cbNewMain(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 					if (orderBy < 0)
 						sprintf(orderBy8, "order by %i desc", -orderBy);
 
-					sprintf(query8, "select * from \"%s\" %s %s limit %i offset %i", tablename8, where8, orderBy8, cacheSize, *pCacheOffset);
+					sprintf(query8, "select *%s from \"%s\" %s %s limit %i offset %i", hasRowid ? ", rowid" : "", tablename8, where8, orderBy8, cacheSize, *pCacheOffset);
 					if (SQLITE_OK == sqlite3_prepare_v2(db, query8, -1, &stmt, 0)) {
 						bindFilterValues(hHeader, stmt);
 
 						int rowNo = 0;
 						while (SQLITE_ROW == sqlite3_step(stmt)) {
-							cache[rowNo] = (TCHAR**)calloc (colCount, sizeof (TCHAR*));
+							cache[rowNo] = (TCHAR**)calloc (colCount + hasRowid, sizeof (TCHAR*));
 
 							for (int colNo = 0; colNo < colCount; colNo++) {
 								cache[rowNo][colNo] = sqlite3_column_type(stmt, colNo) != SQLITE_BLOB ?
 									utf8to16((const char*)sqlite3_column_text(stmt, colNo)) :
 									utf8to16("(BLOB)");
 							}
+							
+							if (hasRowid)
+								cache[rowNo][colCount] = utf8to16((const char*)sqlite3_column_text(stmt, colCount));
 
 							rowNo++;
 						}
@@ -694,7 +755,10 @@ LRESULT CALLBACK cbNewMain(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 				POINT p;
 				GetCursorPos(&p);
 				*(int*)GetProp(hWnd, TEXT("COLNO")) = ia->iSubItem;
-				TrackPopupMenu(GetProp(hWnd, TEXT("DATAMENU")), TPM_RIGHTBUTTON | TPM_TOPALIGN | TPM_LEFTALIGN, p.x, p.y, 0, hWnd, NULL);
+				
+				TCHAR buf[10] = {0};
+				ListView_GetItemText(pHdr->hwndFrom, ia->iItem, ia->iSubItem, buf, 10);
+				TrackPopupMenu(GetProp(hWnd, _tcsncmp(buf, TEXT("(BLOB)"), 6) == 0 ? TEXT("BLOBMENU") : TEXT("DATAMENU")), TPM_RIGHTBUTTON | TPM_TOPALIGN | TPM_LEFTALIGN, p.x, p.y, 0, hWnd, NULL);
 			}
 
 			if (pHdr->idFrom == IDC_GRID && pHdr->code == (DWORD)LVN_ITEMCHANGED) {
@@ -724,6 +788,7 @@ LRESULT CALLBACK cbNewMain(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 			HWND hGridWnd = GetDlgItem(hWnd, IDC_GRID);
 			HWND hStatusWnd = GetDlgItem(hWnd, IDC_STATUSBAR);
 			sqlite3* db = (sqlite3*)GetProp(hWnd, TEXT("DB"));
+			int* pHasRowid = (int*)GetProp(hWnd, TEXT("HASROWID"));
 			int filterAlign = *(int*)GetProp(hWnd, TEXT("FILTERALIGN"));
 			
 			SendMessage(hGridWnd, WM_SETREDRAW, FALSE, 0);
@@ -757,9 +822,12 @@ LRESULT CALLBACK cbNewMain(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
 			sqlite3_stmt *stmt;
 			char query8[1024 + strlen(tablename8)];
-			sprintf(query8, "select * from \"%s\" limit 1", tablename8);
+			sprintf(query8, "select rowid from \"%s\" where 1 = 2", tablename8);
+			*pHasRowid = sqlite3_exec(db, query8, 0, 0, 0) == SQLITE_OK;
+			
+			sprintf(query8, "select *%s from \"%s\" limit 1", *pHasRowid ? ", rowid" : "", tablename8);
 			if (SQLITE_OK == sqlite3_prepare_v2(db, query8, -1, &stmt, 0)) {
-				colCount = sqlite3_column_count(stmt);
+				colCount = sqlite3_column_count(stmt) - *pHasRowid;
 				for (int colNo = 0; colNo < colCount; colNo++) {
 					TCHAR* name16 = utf8to16(sqlite3_column_name(stmt, colNo));
 					const char* decltype8 = sqlite3_column_decltype(stmt, colNo);
@@ -967,7 +1035,8 @@ LRESULT CALLBACK cbNewMain(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 			int cacheSize = *(int*)GetProp(hWnd, TEXT("CACHESIZE"));
 			TCHAR*** cache = (TCHAR***)GetProp(hWnd, TEXT("CACHE"));
 			*(int*)GetProp(hWnd, TEXT("CACHEOFFSET")) = -1;
-			int colCount = Header_GetItemCount(ListView_GetHeader(hGridWnd));
+			int hasRowid = *(int*)GetProp(hWnd, TEXT("HASROWID"));
+			int colCount = Header_GetItemCount(ListView_GetHeader(hGridWnd)) + hasRowid;
 			if (colCount == 0)
 				return 0;
 			for (int rowNo = 0;  rowNo < cacheSize; rowNo++) {
@@ -1329,4 +1398,45 @@ void Menu_SetItemState(HMENU hMenu, UINT wID, UINT fState) {
 	mii.fMask = MIIM_STATE;
 	mii.fState = fState;
 	SetMenuItemInfo(hMenu, wID, FALSE, &mii);
+}
+
+BOOL saveFile(TCHAR* path, const TCHAR* filter, const TCHAR* defExt, HWND hWnd) {
+	OPENFILENAME ofn = {0};
+	ofn.lStructSize = sizeof(ofn);
+	ofn.hwndOwner = hWnd;
+	ofn.lpstrFile = path;
+	ofn.lpstrFile[_tcslen(path) + 1] = '\0';
+	ofn.nMaxFile = MAX_PATH;
+	ofn.lpstrFilter = filter;
+	ofn.nFilterIndex = 1;
+	ofn.lpstrFileTitle = NULL;
+	ofn.nMaxFileTitle = 0;
+	ofn.lpstrInitialDir = NULL;
+	ofn.Flags = OFN_PATHMUSTEXIST | OFN_HIDEREADONLY | OFN_NOCHANGEDIR;
+
+	if (!GetSaveFileName(&ofn))
+		return FALSE;
+
+	if (_tcslen(path) == 0)
+		return saveFile(path, filter, defExt, hWnd);
+
+	TCHAR ext[32] = {0};
+	TCHAR path2[MAX_PATH] = {0};
+
+	_tsplitpath(path, NULL, NULL, NULL, ext);
+	if (_tcslen(ext) > 0)
+		_tcscpy(path2, path);
+	else
+		_sntprintf(path2, MAX_PATH, TEXT("%ls%ls%ls"), path, _tcslen(defExt) > 0 ? TEXT(".") : TEXT(""), defExt);
+
+	BOOL isFileExists = _taccess(path2, 0) == 0;
+	if (isFileExists && IDYES != MessageBox(hWnd, TEXT("Overwrite file?"), TEXT("Confirmation"), MB_YESNO))
+		return saveFile(path, filter, defExt, hWnd);
+
+	if (isFileExists)
+		DeleteFile(path2);
+
+	_tcscpy(path, path2);
+
+	return TRUE;
 }
