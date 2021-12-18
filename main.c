@@ -54,7 +54,7 @@
 #define MAX_TABLE_LENGTH       2000
 
 #define APP_NAME               TEXT("sqlite-wlx")
-#define APP_VERSION            TEXT("0.9.9")
+#define APP_VERSION            TEXT("1.0.0")
 
 #define LCS_FINDFIRST          1
 #define LCS_MATCHCASE          2
@@ -868,10 +868,11 @@ LRESULT CALLBACK cbNewMain(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 				if (kd->wVKey == 0x43) { // C
 					BOOL isCtrl = HIWORD(GetKeyState(VK_CONTROL));
 					BOOL isShift = HIWORD(GetKeyState(VK_SHIFT)); 
+					BOOL isCopyColumn = getStoredValue(TEXT("copy-column"), 0) && ListView_GetSelectedCount(pHdr->hwndFrom) > 1;
 					if (!isCtrl && !isShift)
 						return FALSE;
 						
-					int action = !isShift ? IDM_COPY_CELL : isCtrl ? IDM_COPY_COLUMN : IDM_COPY_ROWS;
+					int action = !isShift && !isCopyColumn ? IDM_COPY_CELL : isCtrl || isCopyColumn ? IDM_COPY_COLUMN : IDM_COPY_ROWS;
 					SendMessage(hWnd, WM_COMMAND, action, 0);
 					return TRUE;
 				}
@@ -1429,7 +1430,12 @@ LRESULT CALLBACK cbHotKey(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 				return 0;
 			}	
 		}
-		SendMessage(wParam == VK_TAB || wParam == VK_ESCAPE || wParam == VK_F1 ? hMainWnd : GetParent(hMainWnd), WM_KEYDOWN, wParam, lParam);
+		if (wParam == VK_TAB || wParam == VK_F1) { 
+			SendMessage(hMainWnd, WM_KEYDOWN, wParam, lParam);
+		} else {
+			SetFocus(GetParent(hMainWnd));		
+			keybd_event(wParam, wParam, KEYEVENTF_EXTENDEDKEY, 0);
+		}
 		return 0;
 	}
 	
