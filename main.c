@@ -59,7 +59,7 @@
 #define MAX_TABLE_LENGTH       2000
 
 #define APP_NAME               TEXT("sqlite-wlx")
-#define APP_VERSION            TEXT("1.0.2")
+#define APP_VERSION            TEXT("1.0.3")
 
 #define LCS_FINDFIRST          1
 #define LCS_MATCHCASE          2
@@ -1183,9 +1183,12 @@ LRESULT CALLBACK cbNewMain(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 				SendMessage(hWnd, WMU_UPDATE_FILTER_SIZE, 0, 0);											
 
 			// Bug fix: force Windows to redraw header
-			int w = ListView_GetColumnWidth(hGridWnd, 0);
-			ListView_SetColumnWidth(hGridWnd, 0, w + 1);
-			ListView_SetColumnWidth(hGridWnd, 0, w);			
+			if (IsWindowVisible(hGridWnd)) { // Win10x64, TCx32 
+				int w = ListView_GetColumnWidth(hGridWnd, 0);
+				ListView_SetColumnWidth(hGridWnd, 0, w + 1);
+				ListView_SetColumnWidth(hGridWnd, 0, w);			
+			}
+						
 			SendMessage(hWnd, WM_SETREDRAW, TRUE, 0);
 			InvalidateRect(hWnd, NULL, TRUE);
 		}
