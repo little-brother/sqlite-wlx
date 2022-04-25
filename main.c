@@ -29,11 +29,13 @@
 #define WMU_SHOW_COLUMNS       WM_USER + 12
 #define WMU_HOT_KEYS           WM_USER + 13  
 #define WMU_HOT_CHARS          WM_USER + 14
+#define WMU_EDIT_CELL          WM_USER + 20
 
 #define IDC_MAIN               100
 #define IDC_TABLELIST          101
 #define IDC_GRID               102
 #define IDC_STATUSBAR          103
+#define IDC_CELL_EDIT          104
 #define IDC_HEADER_EDIT        1000
 
 #define IDM_COPY_CELL          5000
@@ -59,7 +61,7 @@
 #define MAX_TABLE_LENGTH       2000
 
 #define APP_NAME               TEXT("sqlite-wlx")
-#define APP_VERSION            TEXT("1.0.3")
+#define APP_VERSION            TEXT("1.0.4")
 
 #define LCS_FINDFIRST          1
 #define LCS_MATCHCASE          2
@@ -79,7 +81,9 @@ LRESULT CALLBACK cbHotKey(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 LRESULT CALLBACK cbNewMain (HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 LRESULT CALLBACK cbNewHeader(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 LRESULT CALLBACK cbNewFilterEdit (HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+LRESULT CALLBACK cbNewCellEdit(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
+void bindValue(sqlite3_stmt* stmt, int i, const char* value8);
 void bindFilterValues(HWND hHeader, sqlite3_stmt* stmt);
 HWND getMainWindow(HWND hWnd);
 void setStoredValue(TCHAR* name, int value);
@@ -196,8 +200,9 @@ HWND APIENTRY ListLoadW (HWND hListerWnd, TCHAR* fileToLoad, int showFlags) {
 	
 	char* fileToLoad8 = utf16to8(fileToLoad);
 
+	BOOL isEditable = getStoredValue(TEXT("editable"), 0);
 	sqlite3 *db = 0;
-	if (SQLITE_OK != sqlite3_open_v2(fileToLoad8, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI, NULL)) {
+	if (SQLITE_OK != sqlite3_open_v2(fileToLoad8, &db, (isEditable ? SQLITE_OPEN_READWRITE : SQLITE_OPEN_READONLY) | SQLITE_OPEN_URI, NULL)) {
 		MessageBox(hListerWnd, TEXT("Error to open database"), fileToLoad, MB_OK);
 		free(fileToLoad8);
 		return NULL;
@@ -719,12 +724,12 @@ LRESULT CALLBACK cbNewMain(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
 					sqlite3* db = (sqlite3*)GetProp(hWnd, TEXT("DB"));
 					char* tablename8 = (char*)GetProp(hWnd, TEXT("TABLENAME8"));
-					int colNo = *(int*)GetProp(hWnd, TEXT("COLNO"));
+					int colNo = *(int*)GetProp(hWnd, TEXT("CURRENTCOLNO"));
 					TCHAR colName16[MAX_COLUMN_LENGTH + 1];
 					Header_GetItemText(hHeader, colNo, colName16, MAX_COLUMN_LENGTH + 1);
 					char* colName8 = utf16to8(colName16);
 					char query8[1024 + strlen(tablename8)];
-					sprintf(query8, "select %s from \"%s\" where rowid = %s", colName8, tablename8, cache[rowNo - *pCacheOffset][colCount]);
+					sprintf(query8, "select %s from \"%s\" where rowid = %i", colName8, tablename8, _ttoi(cache[rowNo - *pCacheOffset][colCount]));
 					free(colName8);
 					
 					TCHAR path16[MAX_PATH] = {0};
@@ -855,6 +860,10 @@ LRESULT CALLBACK cbNewMain(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 				NMITEMACTIVATE* ia = (LPNMITEMACTIVATE) lParam;
 				SendMessage(hWnd, WMU_SET_CURRENT_CELL, ia->iItem, ia->iSubItem);
 			}
+
+			if (pHdr->idFrom == IDC_GRID && pHdr->code == (DWORD)NM_DBLCLK) {
+				SendMessage(hWnd, WMU_EDIT_CELL, 1, 0);
+			}
 			
 			if (pHdr->idFrom == IDC_GRID && pHdr->code == (DWORD)NM_CLICK && HIWORD(GetKeyState(VK_MENU))) {	
 				NMITEMACTIVATE* ia = (LPNMITEMACTIVATE) lParam;
@@ -880,10 +889,13 @@ LRESULT CALLBACK cbNewMain(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
 			if (pHdr->idFrom == IDC_GRID && pHdr->code == (DWORD)LVN_KEYDOWN) {
 				NMLVKEYDOWN* kd = (LPNMLVKEYDOWN) lParam;
+				HWND hGridWnd = pHdr->hwndFrom;
+				BOOL isCtrl = HIWORD(GetKeyState(VK_CONTROL));
+				
 				if (kd->wVKey == 0x43) { // C
 					BOOL isCtrl = HIWORD(GetKeyState(VK_CONTROL));
 					BOOL isShift = HIWORD(GetKeyState(VK_SHIFT)); 
-					BOOL isCopyColumn = getStoredValue(TEXT("copy-column"), 0) && ListView_GetSelectedCount(pHdr->hwndFrom) > 1;
+					BOOL isCopyColumn = getStoredValue(TEXT("copy-column"), 0) && ListView_GetSelectedCount(hGridWnd) > 1;
 					if (!isCtrl && !isShift)
 						return FALSE;
 						
@@ -892,8 +904,7 @@ LRESULT CALLBACK cbNewMain(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 					return TRUE;
 				}
 
-				if (kd->wVKey == 0x41 && HIWORD(GetKeyState(VK_CONTROL))) { // Ctrl + A
-					HWND hGridWnd = pHdr->hwndFrom;
+				if (kd->wVKey == 0x41 && isCtrl) { // Ctrl + A
 					SendMessage(hGridWnd, WM_SETREDRAW, FALSE, 0);
 					int rowNo = *(int*)GetProp(hWnd, TEXT("CURRENTROWNO"));
 					int colNo = *(int*)GetProp(hWnd, TEXT("CURRENTCOLNO"));					
@@ -903,13 +914,18 @@ LRESULT CALLBACK cbNewMain(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 					InvalidateRect(hGridWnd, NULL, TRUE);
 				}
 				
-				if (kd->wVKey == 0x20 && HIWORD(GetKeyState(VK_CONTROL))) { // Ctrl + Space				
+				if (kd->wVKey == 0x20 && isCtrl) { // Ctrl + Space				
 					SendMessage(hWnd, WMU_SHOW_COLUMNS, 0, 0);					
 					return TRUE;
 				}				
+
+				if ((kd->wVKey == VK_F2 || kd->wVKey == VK_SPACE && !isCtrl)) { // F2 or Space
+					SendMessage(hWnd, WMU_EDIT_CELL, kd->wVKey == VK_F2, 0);
+					return TRUE;
+				}
 				
 				if (kd->wVKey == VK_LEFT || kd->wVKey == VK_RIGHT) {
-					int colCount = Header_GetItemCount(ListView_GetHeader(pHdr->hwndFrom));
+					int colCount = Header_GetItemCount(ListView_GetHeader(hGridWnd));
 					int colNo = *(int*)GetProp(hWnd, TEXT("CURRENTCOLNO")) + (kd->wVKey == VK_RIGHT ? 1 : -1);
 					colNo = colNo < 0 ? colCount - 1 : colNo > colCount - 1 ? 0 : colNo;
 					SendMessage(hWnd, WMU_SET_CURRENT_CELL, *(int*)GetProp(hWnd, TEXT("CURRENTROWNO")), colNo);
@@ -991,7 +1007,43 @@ LRESULT CALLBACK cbNewMain(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
 			InvalidateRect(hGridWnd, NULL, TRUE);		
 		}
-		break;				
+		break;
+		
+		case WMU_EDIT_CELL: {
+			BOOL withText = (BOOL)wParam;
+			if (getStoredValue(TEXT("editable"), 0) == 0)
+				return FALSE;
+				
+			if (*(int*)GetProp(hWnd, TEXT("HASROWID")) == 0)
+				return MessageBox(hWnd, TEXT("Can't edit the value"), NULL, MB_OK);
+			
+			HWND hGridWnd = GetDlgItem(hWnd, IDC_GRID);	
+			int rowNo = *(int*)GetProp(hWnd, TEXT("CURRENTROWNO"));
+			int colNo = *(int*)GetProp(hWnd, TEXT("CURRENTCOLNO"));					
+			int cacheSize = *(int*)GetProp(hWnd, TEXT("CACHESIZE"));
+			int cacheOffset = *(int*)GetProp(hWnd, TEXT("CACHEOFFSET"));				
+			TCHAR*** cache = (TCHAR***)GetProp(hWnd, TEXT("CACHE"));
+
+			if (rowNo == - 1 || rowNo < cacheOffset || rowNo >= cacheOffset + cacheSize)
+				return FALSE;
+							
+			RECT rect;
+			ListView_GetSubItemRect(hGridWnd, rowNo, colNo, LVIR_BOUNDS, &rect);	
+			int h = rect.bottom - rect.top;
+			int w = ListView_GetColumnWidth(hGridWnd, colNo);
+			
+			HWND hEdit = CreateWindowEx(0, WC_EDIT, withText ? cache[rowNo - cacheOffset][colNo] : 0, 
+				WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL, rect.left, rect.top, w, h, 
+				hGridWnd, (HMENU)IDC_CELL_EDIT, GetModuleHandle(NULL), NULL);
+			SendMessage(hEdit, WM_SETFONT, (LPARAM)GetProp(hWnd, TEXT("FONT")), TRUE);
+			SetProp(hEdit, TEXT("WNDPROC"), (HANDLE)SetWindowLongPtr(hEdit, GWLP_WNDPROC, (LONG_PTR)&cbNewCellEdit));
+			if (withText) {
+				int end = GetWindowTextLength(hEdit);
+				SendMessage(hEdit, EM_SETSEL, end, end);				
+			}
+			SetFocus(hEdit);		
+		}
+		break;		
 
 		case WMU_UPDATE_GRID: {
 			HWND hListWnd = GetDlgItem(hWnd, IDC_TABLELIST);
@@ -1542,6 +1594,119 @@ LRESULT CALLBACK cbNewFilterEdit(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPar
 	return CallWindowProc(cbDefault, hWnd, msg, wParam, lParam);
 }
 
+LRESULT CALLBACK cbNewCellEdit(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+	switch (msg) {
+		case WM_DESTROY: {
+			HWND hGridWnd = GetParent(hWnd);
+			BOOL isChanged = !!GetProp(hWnd, TEXT("ISCHANGED"));
+			if (isChanged) {			
+				HWND hMainWnd = getMainWindow(hWnd);
+				HWND hHeader = ListView_GetHeader(hGridWnd);
+				int rowNo = *(int*)GetProp(hMainWnd, TEXT("CURRENTROWNO"));
+				int colNo = *(int*)GetProp(hMainWnd, TEXT("CURRENTCOLNO"));					
+				int cacheSize = *(int*)GetProp(hMainWnd, TEXT("CACHESIZE"));
+				int cacheOffset = *(int*)GetProp(hMainWnd, TEXT("CACHEOFFSET"));				
+				TCHAR*** cache = (TCHAR***)GetProp(hMainWnd, TEXT("CACHE"));
+				int colCount = Header_GetItemCount(hHeader);
+				sqlite3* db = (sqlite3*)GetProp(hMainWnd, TEXT("DB"));
+				char* tablename8 = (char*)GetProp(hMainWnd, TEXT("TABLENAME8"));
+			
+				int len = GetWindowTextLength(hWnd);
+				TCHAR* value16 = (TCHAR*)calloc (len + 1, sizeof (TCHAR));
+				GetWindowText(hWnd, value16, len + 1);
+				
+				TCHAR colName16[MAX_COLUMN_LENGTH + 1];
+				Header_GetItemText(hHeader, colNo, colName16, MAX_COLUMN_LENGTH + 1);
+				char* colName8 = utf16to8(colName16);
+				char query8[1024 + strlen(tablename8) + strlen(colName8)];
+				sprintf(query8, "update \"%s\" set \"%s\" = ?1 where rowid = %i", tablename8, colName8, _ttoi(cache[rowNo - cacheOffset][colCount]));
+				free(colName8);
+
+				BOOL rc = FALSE;
+				sqlite3_stmt *stmt;
+				if (SQLITE_OK == sqlite3_prepare_v2(db, query8, -1, &stmt, 0)) {
+					char* value8 = utf16to8(value16);
+					bindValue(stmt, 1, value8);
+					free(value8);
+					rc = SQLITE_DONE == sqlite3_step(stmt);					 
+				}
+
+				if (rc) {
+					free(cache[rowNo - cacheOffset][colNo]);
+					cache[rowNo - cacheOffset][colNo] = value16;
+				} else {
+					MessageBoxA(hMainWnd, sqlite3_errmsg(db), "Error", MB_OK);
+					free(value16);
+				}
+				
+				sqlite3_finalize(stmt);
+			}
+			
+			SetFocus(hGridWnd);
+			RemoveProp(hWnd, TEXT("ISCHANGED"));
+		}
+		break;
+
+		case WM_KILLFOCUS: {
+			DestroyWindow(hWnd);
+		}
+		break;
+
+		case WM_KEYDOWN: {
+			SetProp(hWnd, TEXT("ISCHANGED"), (HANDLE)1);
+			
+			if (wParam == VK_RETURN) {
+				DestroyWindow(hWnd);
+				return TRUE;
+			}
+
+			if (wParam == VK_ESCAPE) {
+				SetProp(hWnd, TEXT("ISCHANGED"), 0);
+				DestroyWindow(hWnd);
+				return TRUE;
+			}
+
+			if (wParam == 0x41 && HIWORD(GetKeyState(VK_CONTROL))) { // Ctrl + A
+				SendMessage(hWnd, EM_SETSEL, 0, -1);
+				return TRUE;
+			}
+		}
+		break;
+
+		case WM_PASTE:
+		case WM_CUT: {
+			SetProp(hWnd, TEXT("ISCHANGED"), (HANDLE)1);
+		}
+		break;
+	}
+
+	return CallWindowProc((WNDPROC)GetProp(hWnd, TEXT("WNDPROC")), hWnd, msg, wParam, lParam);
+}
+
+void bindValue(sqlite3_stmt* stmt, int i, const char* value8) {
+	int len = strlen(value8);
+	BOOL isNum = TRUE;
+	int dotCount = 0;
+	for (int i = +(value8[0] == '-' /* is negative */); i < len; i++) {
+		isNum = isNum && (isdigit(value8[i]) || value8[i] == '.' || value8[i] == ',');
+		dotCount += value8[i] == '.' || value8[i] == ',';
+	}
+
+	if (isNum && dotCount == 0 && len < 10) // 2147483647
+		sqlite3_bind_int(stmt, i, atoi(value8));
+	else if (isNum && dotCount == 0 && len >= 10)
+			sqlite3_bind_int64(stmt, i, atoll(value8));
+	else if (isNum && dotCount == 1) {
+		double d;
+		char *endptr;
+		errno = 0;
+		d = strtold(value8, &endptr);
+		sqlite3_bind_double(stmt, i, d);
+	} else {
+		sqlite3_bind_text(stmt, i, value8, len, SQLITE_TRANSIENT);
+	}
+}
+
 void bindFilterValues(HWND hHeader, sqlite3_stmt* stmt) {
 	int colCount = Header_GetItemCount(hHeader);
 	int bindNo = 1;
@@ -1552,29 +1717,7 @@ void bindFilterValues(HWND hHeader, sqlite3_stmt* stmt) {
 			TCHAR value16[size + 1];
 			GetWindowText(hEdit, value16, size + 1);
 			char* value8 = utf16to8(value16[0] == TEXT('=') || value16[0] == TEXT('/') || value16[0] == TEXT('!') || value16[0] == TEXT('<') || value16[0] == TEXT('>') ? value16 + 1 : value16);
-
-			int len = strlen(value8);
-			BOOL isNum = TRUE;
-			int dotCount = 0;
-			for (int i = +(value8[0] == '-' /* is negative */); i < len; i++) {
-				isNum = isNum && (isdigit(value8[i]) || value8[i] == '.' || value8[i] == ',');
-				dotCount += value8[i] == '.' || value8[i] == ',';
-			}
-
-			if (isNum && dotCount == 0 && len < 10) // 2147483647
-				sqlite3_bind_int(stmt, bindNo, atoi(value8));
-			else if (isNum && dotCount == 0 && len >= 10)
-					sqlite3_bind_int64(stmt, bindNo, atoll(value8));
-			else if (isNum && dotCount == 1) {
-				double d;
-				char *endptr;
-				errno = 0;
-				d = strtold(value8, &endptr);
-				sqlite3_bind_double(stmt, bindNo, d);
-			} else {
-				sqlite3_bind_text(stmt, bindNo, value8, len, SQLITE_TRANSIENT);
-			}
-
+			bindValue(stmt, bindNo, value8);
 			free(value8);
 			bindNo++;
 		}
