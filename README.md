@@ -8,6 +8,7 @@
 ### Features
 * Column filters
 * Sort data by column click
+* Data editing (off by default)
 * Doesn't require SQLite library (built-in)
 * Supports huge tables
 

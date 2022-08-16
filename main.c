@@ -61,7 +61,7 @@
 #define MAX_TABLE_LENGTH       2000
 
 #define APP_NAME               TEXT("sqlite-wlx")
-#define APP_VERSION            TEXT("1.0.4")
+#define APP_VERSION            TEXT("1.0.5")
 
 #define LCS_FINDFIRST          1
 #define LCS_MATCHCASE          2
