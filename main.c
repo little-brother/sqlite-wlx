@@ -61,7 +61,7 @@
 #define MAX_TABLE_LENGTH       2000
 
 #define APP_NAME               TEXT("sqlite-wlx")
-#define APP_VERSION            TEXT("1.0.5")
+#define APP_VERSION            TEXT("1.0.6")
 
 #define LCS_FINDFIRST          1
 #define LCS_MATCHCASE          2
@@ -274,7 +274,9 @@ HWND APIENTRY ListLoadW (HWND hListerWnd, TCHAR* fileToLoad, int showFlags) {
 
 	HWND hGridWnd = CreateWindow(WC_LISTVIEW, NULL, WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SHOWSELALWAYS | LVS_OWNERDATA | WS_TABSTOP,
 		205, 0, 100, 100, hMainWnd, (HMENU)IDC_GRID, GetModuleHandle(0), NULL);
-	ListView_SetExtendedListViewStyle(hGridWnd, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_LABELTIP);
+	
+	int noLines = getStoredValue(TEXT("disable-grid-lines"), 0);	
+	ListView_SetExtendedListViewStyle(hGridWnd, LVS_EX_FULLROWSELECT | (noLines ? 0 : LVS_EX_GRIDLINES) | LVS_EX_LABELTIP);
 	SetProp(hGridWnd, TEXT("WNDPROC"), (HANDLE)SetWindowLongPtr(hGridWnd, GWLP_WNDPROC, (LONG_PTR)cbHotKey));
 	
 	HWND hHeader = ListView_GetHeader(hGridWnd);
