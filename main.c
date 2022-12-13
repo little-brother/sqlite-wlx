@@ -37,6 +37,10 @@
 #define IDC_STATUSBAR          103
 #define IDC_CELL_EDIT          104
 #define IDC_HEADER_EDIT        1000
+#define IDC_DLG_GRID           2000
+#define IDC_DLG_OK             2001
+#define IDC_DLG_EDIT           2200
+#define IDC_DLG_LABEL          2500
 
 #define IDM_COPY_CELL          5000
 #define IDM_COPY_ROWS          5001
@@ -46,6 +50,10 @@
 #define IDM_HIDE_COLUMN        5010
 #define IDM_DDL                5015
 #define IDM_BLOB               5020
+#define IDM_ADD_ROW            5021
+#define IDM_DELETE_ROW         5022
+#define IDM_SEPARATOR1         5030
+#define IDM_SEPARATOR2         5031
 
 #define SB_VERSION             0
 #define SB_TABLE_COUNT         1
@@ -61,7 +69,7 @@
 #define MAX_TABLE_LENGTH       2000
 
 #define APP_NAME               TEXT("sqlite-wlx")
-#define APP_VERSION            TEXT("1.0.8")
+#define APP_VERSION            TEXT("1.0.9")
 
 #define LCS_FINDFIRST          1
 #define LCS_MATCHCASE          2
@@ -82,6 +90,7 @@ LRESULT CALLBACK cbNewMain (HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 LRESULT CALLBACK cbNewHeader(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 LRESULT CALLBACK cbNewFilterEdit (HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 LRESULT CALLBACK cbNewCellEdit(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+INT_PTR CALLBACK cbDlgAddRow(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 void bindValue(sqlite3_stmt* stmt, int i, const char* value8);
 void bindFilterValues(HWND hHeader, sqlite3_stmt* stmt);
@@ -291,7 +300,7 @@ HWND APIENTRY ListLoadW (HWND hListerWnd, TCHAR* fileToLoad, int showFlags) {
 	AppendMenu(hGridMenu, MF_STRING, IDM_COPY_CELL, TEXT("Copy cell"));
 	AppendMenu(hGridMenu, MF_STRING, IDM_COPY_ROWS, TEXT("Copy row(s)"));
 	AppendMenu(hGridMenu, MF_STRING, IDM_COPY_COLUMN, TEXT("Copy column"));	
-	AppendMenu(hGridMenu, MF_STRING, 0, NULL);
+	AppendMenu(hGridMenu, MF_STRING, IDM_SEPARATOR2, NULL);
 	AppendMenu(hGridMenu, MF_STRING, IDM_HIDE_COLUMN, TEXT("Hide column"));		
 	AppendMenu(hGridMenu, MF_STRING, 0, NULL);
 	AppendMenu(hGridMenu, (*(int*)GetProp(hMainWnd, TEXT("FILTERROW")) != 0 ? MF_CHECKED : 0) | MF_STRING, IDM_FILTER_ROW, TEXT("Filters"));		
@@ -711,6 +720,74 @@ LRESULT CALLBACK cbNewMain(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 				free(delimiter);
 			}
 			
+			if (cmd == IDM_ADD_ROW) {
+				struct DLGITEMTEMPLATEEX{DLGITEMTEMPLATE; WORD menu; WORD   windowClass;} tpl = {0};
+				if (IDOK == DialogBoxIndirectParam ((HINSTANCE)GetModuleHandle(NULL), (LPCDLGTEMPLATE)&tpl, hWnd, &cbDlgAddRow, (LPARAM)hWnd)) {
+					SendMessage(hWnd, WMU_UPDATE_ROW_COUNT, 0, 0);
+					SendMessage(hWnd, WMU_UPDATE_DATA, 0, 0);
+				}	
+			}
+			
+			if (cmd == IDM_DELETE_ROW) {
+				HWND hGridWnd = GetDlgItem(hWnd, IDC_GRID);
+				HWND hHeader = ListView_GetHeader(hGridWnd);
+				
+				int selCount = ListView_GetSelectedCount(hGridWnd);
+				int rowCount = *(int*)GetProp(hWnd, TEXT("ROWCOUNT"));
+				int totalRowCount = *(int*)GetProp(hWnd, TEXT("TOTALROWCOUNT"));
+				sqlite3* db = (sqlite3*)GetProp(hWnd, TEXT("DB"));
+				char* tablename8 = (char*)GetProp(hWnd, TEXT("TABLENAME8"));
+
+				char* query8 = 0;
+				
+				if (selCount == totalRowCount) {
+					query8 = (char*)calloc (64 + strlen(tablename8), sizeof (char));
+					sprintf(query8, "delete from \"%s\"", tablename8);	
+				} else {		
+					TCHAR*** cache = (TCHAR***)GetProp(hWnd, TEXT("CACHE"));		
+					int cacheSize = *(int*)GetProp(hWnd, TEXT("CACHESIZE"));
+					int cacheOffset = *(int*)GetProp(hWnd, TEXT("CACHEOFFSET"));				
+					int minRowNo = ListView_GetNextItem(hGridWnd, -1, LVNI_SELECTED);
+					int maxRowNo = minRowNo;
+					while (TRUE) {
+						int rowNo = ListView_GetNextItem(hGridWnd, maxRowNo, LVNI_SELECTED);
+						if (rowNo == -1)
+							break;
+						maxRowNo = rowNo;	
+					}	
+					
+					if (minRowNo < cacheOffset || maxRowNo >= cacheOffset + cacheSize) {
+						TCHAR msg[1024];
+						_sntprintf(msg, 1024, TEXT("The operation is available only for full-cached resultset.\nThis resultset has %i rows and a cache size is %i.\nCheck Wiki to learn how to increase the cache size."), rowCount, cacheSize);
+						MessageBox(hWnd, msg, 0, 0);
+						return 0;
+					}
+					
+					query8 = (char*)calloc (64 + strlen(tablename8) + selCount * 25, sizeof (char));
+					sprintf(query8, "delete from \"%s\" where rowid in (0", tablename8);
+					
+					int colCount = Header_GetItemCount(hHeader);
+					int rowNo = ListView_GetNextItem(hGridWnd, -1, LVNI_SELECTED);
+					while (rowNo != -1) {
+						char buf8[64];
+						sprintf(buf8, ", %i", _ttoi(cache[rowNo - cacheOffset][colCount]));
+						strcat(query8, buf8);
+						rowNo = ListView_GetNextItem(hGridWnd, rowNo, LVNI_SELECTED);	
+					}
+					strcat(query8, ")");
+				}
+				
+				if (SQLITE_OK == sqlite3_exec(db, query8, 0, 0, 0)) {
+					ListView_SetItemState(hGridWnd, -1, 0, LVIS_SELECTED | LVIS_FOCUSED);
+					SendMessage(hWnd, WMU_UPDATE_ROW_COUNT, 0, 0);
+					SendMessage(hWnd, WMU_UPDATE_DATA, 0, 0);
+				} else	
+					MessageBoxA(hWnd, sqlite3_errmsg(db), "Error", MB_OK);
+					
+				free(query8);
+				return 0;	
+			}
+			
 			if (cmd == IDM_BLOB) {
 				HWND hGridWnd = GetDlgItem(hWnd, IDC_GRID);
 				HWND hHeader = ListView_GetHeader(hGridWnd);
@@ -939,6 +1016,9 @@ LRESULT CALLBACK cbNewMain(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 					SendMessage(hWnd, WMU_SET_CURRENT_CELL, *(int*)GetProp(hWnd, TEXT("CURRENTROWNO")), colNo);
 					return TRUE;
 				}
+				
+				if (kd->wVKey == VK_DELETE)
+					SendMessage(hWnd, WM_COMMAND, IDM_DELETE_ROW, 0);
 			}
 
 			if (pHdr->code == HDN_ITEMCHANGED && pHdr->hwndFrom == ListView_GetHeader(GetDlgItem(hWnd, IDC_GRID)))
@@ -1114,6 +1194,18 @@ LRESULT CALLBACK cbNewMain(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 				SendMessage(hWnd, WMU_UPDATE_FILTER_SIZE, 0, 0);
 			}
 			sqlite3_finalize(stmt);
+			
+			if (getStoredValue(TEXT("editable"), 0)) {
+				HMENU hGridMenu = GetProp(hWnd, TEXT("GRIDMENU"));
+				DeleteMenu(hGridMenu, IDM_ADD_ROW, MF_BYCOMMAND);
+				DeleteMenu(hGridMenu, IDM_DELETE_ROW, MF_BYCOMMAND);
+				DeleteMenu(hGridMenu, IDM_SEPARATOR1, MF_BYCOMMAND);				
+				if (*pHasRowid) {
+					InsertMenu(hGridMenu, IDM_SEPARATOR2, MF_BYCOMMAND | MF_STRING, IDM_SEPARATOR1, NULL);						
+					InsertMenu(hGridMenu, IDM_SEPARATOR2, MF_BYCOMMAND | MF_STRING, IDM_ADD_ROW, TEXT("Add row"));
+					InsertMenu(hGridMenu, IDM_SEPARATOR2, MF_BYCOMMAND | MF_STRING, IDM_DELETE_ROW, TEXT("Delete row(s)"));
+				}
+			}
 
 			*(int*)GetProp(hWnd, TEXT("ORDERBY")) = 0;
 			SendMessage(hWnd, WMU_UPDATE_ROW_COUNT, 0, 0);
@@ -1677,6 +1769,111 @@ LRESULT CALLBACK cbNewCellEdit(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam
 	}
 
 	return CallWindowProc((WNDPROC)GetProp(hWnd, TEXT("WNDPROC")), hWnd, msg, wParam, lParam);
+}
+
+// lParam = USERDATA = hMainWnd
+INT_PTR CALLBACK cbDlgAddRow(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+	switch (msg) {
+		case WM_INITDIALOG: {
+			SetWindowLongPtr(hWnd, GWLP_USERDATA, lParam);
+			SetWindowLongPtr(hWnd, GWL_STYLE, WS_POPUP | WS_VISIBLE | WS_CAPTION | WS_SYSMENU);
+			SetWindowText(hWnd, TEXT("Add row"));
+			
+			HFONT hFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);			
+			
+			HWND hGridWnd = GetDlgItem((HWND)lParam, IDC_GRID);
+			HWND hHeader = ListView_GetHeader(hGridWnd);
+			int colCount = Header_GetItemCount(hHeader);
+			int w = 120;
+			int h = 20;
+			for (int colNo = 0; colNo < colCount; colNo++) {
+				TCHAR colName16[256];
+				Header_GetItemText(hHeader, colNo, colName16, 255);
+				HWND hLabel = CreateWindow(WC_STATIC, colName16, WS_VISIBLE | WS_CHILD | SS_WORDELLIPSIS | SS_RIGHT, 
+					5, 10 + colNo * h, w - 5, h, hWnd, (HMENU)IntToPtr(IDC_DLG_LABEL + colNo), GetModuleHandle(0), 0);
+				HWND hEdit = CreateWindow(WC_EDIT, NULL, WS_VISIBLE | WS_CHILD | WS_TABSTOP | WS_BORDER | WS_CLIPSIBLINGS | ES_AUTOHSCROLL, 
+					w + 5, 10 + colNo * h - 2, 200, h - 2, hWnd, (HMENU)IntToPtr(IDC_DLG_EDIT + colNo), GetModuleHandle(0), 0);
+
+				SendMessage(hLabel, WM_SETFONT, (WPARAM)hFont, 0);
+				SendMessage(hEdit, WM_SETFONT, (WPARAM)hFont, 0);
+			}	
+			
+			RECT rc;
+			GetWindowRect(hGridWnd, &rc);
+			SetWindowPos(hWnd, 0, rc.left + 50, rc.top + 50, 340, colCount * h + 70, SWP_NOZORDER);	
+		
+			HWND hBtn = CreateWindow(WC_BUTTON, TEXT("OK"), WS_VISIBLE | WS_CHILD, 245, colCount * h + 15, 80, 22, hWnd, (HMENU)IDC_DLG_OK, GetModuleHandle(0), 0);
+			SendMessage(hBtn, WM_SETFONT, (WPARAM)hFont, 0);
+			InvalidateRect(hWnd, NULL, TRUE);
+		}
+		break;
+		
+		case WM_COMMAND: {
+			WORD cmd = LOWORD(wParam);
+			if (cmd == IDC_DLG_OK) {
+				HWND hMainWnd = (HWND)GetWindowLongPtr(hWnd, GWLP_USERDATA);
+				sqlite3* db = (sqlite3*)GetProp(hMainWnd, TEXT("DB"));
+				char* tablename8 = (char*)GetProp(hMainWnd, TEXT("TABLENAME8"));
+				
+				HWND hGridWnd = GetDlgItem(hMainWnd, IDC_GRID);
+				HWND hHeader = ListView_GetHeader(hGridWnd);
+				int colCount = Header_GetItemCount(hHeader);
+				
+				int len = 128;
+				for (int colNo = 0; colNo < colCount; colNo++) 				
+					len += GetWindowTextLength(GetDlgItem(hWnd, IDC_DLG_LABEL + colNo)) + GetWindowTextLength(GetDlgItem(hWnd, IDC_DLG_EDIT + colNo)) + 10;
+					
+				char* query8 = (char*)calloc(len, sizeof(char));
+				sprintf(query8, "insert into \"%s\" (\"", tablename8);
+				for (int colNo = 0; colNo < colCount; colNo++) {
+					TCHAR colName16[255];
+					Header_GetItemText(hHeader, colNo, colName16, 255);
+					char* colName8 = utf16to8(colName16);
+					strcat(query8, colName8);
+					strcat(query8, colNo != colCount - 1 ? "\", \"" : "\") values (");
+					free(colName8);
+				}
+				
+				for (int colNo = 0; colNo < colCount; colNo++) {
+					int len = GetWindowTextLength(GetDlgItem(hWnd, IDC_DLG_EDIT + colNo)) + 1;
+					TCHAR value16[len + 1];
+					GetWindowText(GetDlgItem(hWnd, IDC_DLG_EDIT + colNo), value16, len);
+					
+					if (_tcslen(value16)) {
+						char* value8 = utf16to8(value16);
+						strcat(query8, "\"");
+						strcat(query8, value8);
+						strcat(query8, "\"");
+						free(value8);
+					} else {
+						strcat(query8, "null");
+					}
+					
+					strcat(query8, colNo != colCount - 1 ? ", " : ")");
+				}
+
+				if (SQLITE_OK == sqlite3_exec(db, query8, 0, 0, 0)) {
+					free(query8);
+					EndDialog(hWnd, IDOK);
+				} else {
+					free(query8);	
+					MessageBoxA(hWnd, sqlite3_errmsg(db), "Error", MB_OK);
+				}
+			}
+			
+			if (cmd == IDCANCEL) {
+				EndDialog (hWnd, IDCANCEL);
+			}
+		}
+		break;
+		
+		case WM_CLOSE: {
+			EndDialog(hWnd, IDCANCEL);
+		}
+		break;
+	}
+	
+	return FALSE;
 }
 
 void bindValue(sqlite3_stmt* stmt, int i, const char* value8) {
