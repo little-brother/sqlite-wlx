@@ -69,7 +69,7 @@
 #define MAX_TABLE_LENGTH       2000
 
 #define APP_NAME               TEXT("sqlite-wlx")
-#define APP_VERSION            TEXT("1.0.9")
+#define APP_VERSION            TEXT("1.1.0")
 
 #define LCS_FINDFIRST          1
 #define LCS_MATCHCASE          2
@@ -1841,10 +1841,20 @@ INT_PTR CALLBACK cbDlgAddRow(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) 
 					
 					if (_tcslen(value16)) {
 						char* value8 = utf16to8(value16);
-						strcat(query8, "\"");
-						strcat(query8, value8);
-						strcat(query8, "\"");
+						char* qvalue8 = (char*)calloc(2 * strlen(value8) + 1, sizeof(char));
+						int j = 0;
+						for (int i = 0; i < strlen(value8); i++) {
+							if (value8[i] == '\'') {
+								qvalue8[i + j] = value8[i];
+								j++;
+							}
+							qvalue8[i + j] = value8[i];
+						}	
+						strcat(query8, "\'");
+						strcat(query8, qvalue8);
+						strcat(query8, "\'");
 						free(value8);
+						free(qvalue8);
 					} else {
 						strcat(query8, "null");
 					}
