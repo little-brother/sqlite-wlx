@@ -67,9 +67,10 @@
 #define MAX_TEXT_LENGTH        32000
 #define MAX_COLUMN_LENGTH      2000
 #define MAX_TABLE_LENGTH       2000
+#define BLOB_VALUE             "(BLOB)"
 
 #define APP_NAME               TEXT("sqlite-wlx")
-#define APP_VERSION            TEXT("1.1.0")
+#define APP_VERSION            TEXT("1.1.1")
 
 #define LCS_FINDFIRST          1
 #define LCS_MATCHCASE          2
@@ -721,7 +722,7 @@ LRESULT CALLBACK cbNewMain(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 			}
 			
 			if (cmd == IDM_ADD_ROW) {
-				struct DLGITEMTEMPLATEEX{DLGITEMTEMPLATE; WORD menu; WORD   windowClass;} tpl = {0};
+				struct DLGITEMTEMPLATEEX{DLGITEMTEMPLATE; WORD menu; WORD windowClass;} tpl = {0};
 				if (IDOK == DialogBoxIndirectParam ((HINSTANCE)GetModuleHandle(NULL), (LPCDLGTEMPLATE)&tpl, hWnd, &cbDlgAddRow, (LPARAM)hWnd)) {
 					SendMessage(hWnd, WMU_UPDATE_ROW_COUNT, 0, 0);
 					SendMessage(hWnd, WMU_UPDATE_DATA, 0, 0);
@@ -732,12 +733,15 @@ LRESULT CALLBACK cbNewMain(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 				HWND hGridWnd = GetDlgItem(hWnd, IDC_GRID);
 				HWND hHeader = ListView_GetHeader(hGridWnd);
 				
+				if (*(int*)GetProp(hWnd, TEXT("HASROWID")) == 0 || getStoredValue(TEXT("editable"), 1) == 0)
+					return 0;				
+				
 				int selCount = ListView_GetSelectedCount(hGridWnd);
 				int rowCount = *(int*)GetProp(hWnd, TEXT("ROWCOUNT"));
 				int totalRowCount = *(int*)GetProp(hWnd, TEXT("TOTALROWCOUNT"));
 				sqlite3* db = (sqlite3*)GetProp(hWnd, TEXT("DB"));
 				char* tablename8 = (char*)GetProp(hWnd, TEXT("TABLENAME8"));
-
+				
 				char* query8 = 0;
 				
 				if (selCount == totalRowCount) {
@@ -913,7 +917,7 @@ LRESULT CALLBACK cbNewMain(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 							for (int colNo = 0; colNo < colCount; colNo++) {
 								cache[rowNo][colNo] = sqlite3_column_type(stmt, colNo) != SQLITE_BLOB ?
 									utf8to16((const char*)sqlite3_column_text(stmt, colNo)) :
-									utf8to16("(BLOB)");
+									utf8to16(BLOB_VALUE);
 							}
 							
 							if (hasRowid)
@@ -961,9 +965,25 @@ LRESULT CALLBACK cbNewMain(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 			}			
 
 			if (pHdr->idFrom == IDC_GRID && pHdr->code == (DWORD)NM_RCLICK) {
+				HWND hGridWnd = GetDlgItem(hWnd, IDC_GRID);
+				HWND hHeader = ListView_GetHeader(hGridWnd);
+				int rowNo = *(int*)GetProp(hWnd, TEXT("CURRENTROWNO"));
+				int colNo = *(int*)GetProp(hWnd, TEXT("CURRENTCOLNO"));
+				
+				int colCount = Header_GetItemCount(hHeader);
+				int rowCount = *(int*)GetProp(hWnd, TEXT("ROWCOUNT"));
+
+				BOOL isBlob = FALSE;
+				if (rowNo != -1 && colNo != -1 && rowNo < rowCount && colCount != 0 && colNo < colCount) {
+					TCHAR*** cache = (TCHAR***)GetProp(hWnd, TEXT("CACHE"));
+					int cacheSize = *(int*)GetProp(hWnd, TEXT("CACHESIZE"));
+					int cacheOffset = *(int*)GetProp(hWnd, TEXT("CACHEOFFSET"));
+					isBlob = rowNo >= cacheOffset && rowNo < cacheOffset + cacheSize && (_tcscmp(cache[rowNo - cacheOffset][colNo], TEXT(BLOB_VALUE)) == 0);
+				}
+
 				POINT p;
 				GetCursorPos(&p);
-				TrackPopupMenu(GetProp(hWnd, TEXT("GRIDMENU")), TPM_RIGHTBUTTON | TPM_TOPALIGN | TPM_LEFTALIGN, p.x, p.y, 0, hWnd, NULL);
+				TrackPopupMenu(GetProp(hWnd, isBlob ? TEXT("BLOBMENU") : TEXT("GRIDMENU")), TPM_RIGHTBUTTON | TPM_TOPALIGN | TPM_LEFTALIGN, p.x, p.y, 0, hWnd, NULL);			
 			}
 
 			if (pHdr->idFrom == IDC_GRID && pHdr->code == (DWORD)LVN_ITEMCHANGED) {
@@ -1101,6 +1121,9 @@ LRESULT CALLBACK cbNewMain(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
 			if (rowNo == - 1 || rowNo < cacheOffset || rowNo >= cacheOffset + cacheSize)
 				return FALSE;
+				
+			if (_tcscmp(cache[rowNo - cacheOffset][colNo], TEXT(BLOB_VALUE)) == 0) 
+				return MessageBeep(0);	
 							
 			RECT rect;
 			ListView_GetSubItemRect(hGridWnd, rowNo, colNo, LVIR_BOUNDS, &rect);	
