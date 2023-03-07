@@ -70,7 +70,7 @@
 #define BLOB_VALUE             "(BLOB)"
 
 #define APP_NAME               TEXT("sqlite-wlx")
-#define APP_VERSION            TEXT("1.1.1")
+#define APP_VERSION            TEXT("1.1.2")
 
 #define LCS_FINDFIRST          1
 #define LCS_MATCHCASE          2
@@ -331,6 +331,7 @@ HWND APIENTRY ListLoadW (HWND hListerWnd, TCHAR* fileToLoad, int showFlags) {
 		vCount += !isTable;
 	}
 	sqlite3_finalize(stmt);
+	
 	TCHAR buf[255];
 	_sntprintf(buf, 32, TEXT(" %ls"), APP_VERSION);	
 	SendMessage(hStatusWnd, SB_SETTEXT, SB_VERSION, (LPARAM)buf);	
@@ -341,8 +342,10 @@ HWND APIENTRY ListLoadW (HWND hListerWnd, TCHAR* fileToLoad, int showFlags) {
 
 	SendMessage(hMainWnd, WMU_SET_FONT, 0, 0);
 	SendMessage(hMainWnd, WMU_SET_THEME, 0, 0);
-	ListBox_SetCurSel(hListWnd, 0);
-	SendMessage(hMainWnd, WMU_UPDATE_GRID, 0, 0);
+	if (ListBox_GetCount(hListWnd) > 0) { 
+		ListBox_SetCurSel(hListWnd, 0);
+		SendMessage(hMainWnd, WMU_UPDATE_GRID, 0, 0);
+	}
 	ShowWindow(hMainWnd, SW_SHOW);
 	SetFocus(hListWnd);
 
@@ -721,7 +724,7 @@ LRESULT CALLBACK cbNewMain(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 				free(delimiter);
 			}
 			
-			if (cmd == IDM_ADD_ROW) {
+			if (cmd == IDM_ADD_ROW && getStoredValue(TEXT("editable"), 0) == 1) {
 				struct DLGITEMTEMPLATEEX{DLGITEMTEMPLATE; WORD menu; WORD windowClass;} tpl = {0};
 				if (IDOK == DialogBoxIndirectParam ((HINSTANCE)GetModuleHandle(NULL), (LPCDLGTEMPLATE)&tpl, hWnd, &cbDlgAddRow, (LPARAM)hWnd)) {
 					SendMessage(hWnd, WMU_UPDATE_ROW_COUNT, 0, 0);
@@ -733,7 +736,7 @@ LRESULT CALLBACK cbNewMain(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 				HWND hGridWnd = GetDlgItem(hWnd, IDC_GRID);
 				HWND hHeader = ListView_GetHeader(hGridWnd);
 				
-				if (*(int*)GetProp(hWnd, TEXT("HASROWID")) == 0 || getStoredValue(TEXT("editable"), 1) == 0)
+				if (*(int*)GetProp(hWnd, TEXT("HASROWID")) == 0 || getStoredValue(TEXT("editable"), 0) == 0)
 					return 0;				
 				
 				int selCount = ListView_GetSelectedCount(hGridWnd);
@@ -1562,6 +1565,9 @@ LRESULT CALLBACK cbNewMain(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 				return TRUE;
 			}
 			
+			if (wParam == VK_INSERT)
+				SendMessage(hWnd, WM_COMMAND, IDM_ADD_ROW, 0);			
+			
 			if (wParam == 0x20 && isCtrl) { // Ctrl + Space
 				SendMessage(hWnd, WMU_SHOW_COLUMNS, 0, 0);
 				return TRUE;
@@ -1570,8 +1576,9 @@ LRESULT CALLBACK cbNewMain(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 			if (wParam == VK_ESCAPE || wParam == VK_F11 ||
 				wParam == VK_F3 || wParam == VK_F5 || wParam == VK_F7 || (isCtrl && wParam == 0x46) || // Ctrl + F
 				((wParam >= 0x31 && wParam <= 0x38) && !getStoredValue(TEXT("disable-num-keys"), 0) || // 1 - 8
-				(wParam == 0x4E || wParam == 0x50) && !getStoredValue(TEXT("disable-np-keys"), 0)) && // N, P
-				GetDlgCtrlID(GetFocus()) / 100 * 100 != IDC_HEADER_EDIT) { 
+				(wParam == 0x4E || wParam == 0x50) && !getStoredValue(TEXT("disable-np-keys"), 0) || // N, P
+				wParam == 0x51 && getStoredValue(TEXT("exit-by-q"), 0)) && // Q
+				(GetDlgCtrlID(GetFocus()) / 100 * 100 != IDC_HEADER_EDIT || GetDlgCtrlID(GetFocus()) == IDC_CELL_EDIT)) {
 				
 				if (wParam == VK_F3 || wParam == VK_F5 || wParam == VK_F7 || wParam == 0x46) {
 					int cacheSize = *(int*)GetProp(hWnd, TEXT("CACHESIZE"));	
@@ -1596,11 +1603,16 @@ LRESULT CALLBACK cbNewMain(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 		
 		case WMU_HOT_CHARS: {
 			BOOL isCtrl = HIWORD(GetKeyState(VK_CONTROL));
+
+			unsigned char scancode = ((unsigned char*)&lParam)[2];
+			UINT key = MapVirtualKey(scancode,MAPVK_VSC_TO_VK);
+
 			return !_istprint(wParam) && (
 				wParam == VK_ESCAPE || wParam == VK_F11 || wParam == VK_F1 ||
 				wParam == VK_F3 || wParam == VK_F5 || wParam == VK_F7) ||
 				wParam == VK_TAB || wParam == VK_RETURN ||
-				isCtrl && (wParam == 0x46 || wParam == 0x20);
+				isCtrl && key == 0x46 || // Ctrl + F
+				getStoredValue(TEXT("exit-by-q"), 0) && key == 0x51 && (GetDlgCtrlID(GetFocus()) / 100 * 100 != IDC_HEADER_EDIT || GetDlgCtrlID(GetFocus()) == IDC_CELL_EDIT);
 		}
 		break;					
 	}
@@ -1827,6 +1839,7 @@ INT_PTR CALLBACK cbDlgAddRow(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) 
 		
 			HWND hBtn = CreateWindow(WC_BUTTON, TEXT("OK"), WS_VISIBLE | WS_CHILD, 245, colCount * h + 15, 80, 22, hWnd, (HMENU)IDC_DLG_OK, GetModuleHandle(0), 0);
 			SendMessage(hBtn, WM_SETFONT, (WPARAM)hFont, 0);
+			SendMessage(hWnd, DM_SETDEFID, IDC_DLG_OK, 0);
 			InvalidateRect(hWnd, NULL, TRUE);
 		}
 		break;
