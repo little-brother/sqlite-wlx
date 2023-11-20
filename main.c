@@ -27,8 +27,9 @@
 #define WMU_SET_THEME          WM_USER + 10
 #define WMU_HIDE_COLUMN        WM_USER + 11
 #define WMU_SHOW_COLUMNS       WM_USER + 12
-#define WMU_HOT_KEYS           WM_USER + 13  
-#define WMU_HOT_CHARS          WM_USER + 14
+#define WMU_SORT_COLUMN        WM_USER + 13
+#define WMU_HOT_KEYS           WM_USER + 14  
+#define WMU_HOT_CHARS          WM_USER + 15
 #define WMU_EDIT_CELL          WM_USER + 20
 
 #define IDC_MAIN               100
@@ -70,7 +71,7 @@
 #define BLOB_VALUE             "(BLOB)"
 
 #define APP_NAME               TEXT("sqlite-wlx")
-#define APP_VERSION            TEXT("1.1.3")
+#define APP_VERSION            TEXT("1.1.4")
 
 #define LCS_FINDFIRST          1
 #define LCS_MATCHCASE          2
@@ -736,6 +737,8 @@ LRESULT CALLBACK cbNewMain(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 				if (IDOK == DialogBoxIndirectParam ((HINSTANCE)GetModuleHandle(NULL), (LPCDLGTEMPLATE)&tpl, hWnd, &cbDlgAddRow, (LPARAM)hWnd)) {
 					SendMessage(hWnd, WMU_UPDATE_ROW_COUNT, 0, 0);
 					SendMessage(hWnd, WMU_UPDATE_DATA, 0, 0);
+					SendMessage(hWnd, WMU_AUTO_COLUMN_SIZE, 0, 0);
+					SetFocus(GetDlgItem(hWnd, IDC_GRID));
 				}	
 			}
 			
@@ -945,14 +948,7 @@ LRESULT CALLBACK cbNewMain(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 			
 			if (pHdr->idFrom == IDC_GRID && pHdr->code == LVN_COLUMNCLICK) {
 				NMLISTVIEW* lv = (NMLISTVIEW*)lParam;
-				if (HIWORD(GetKeyState(VK_CONTROL))) 
-					return SendMessage(hWnd, WMU_HIDE_COLUMN, lv->iSubItem, 0);
-					
-				int colNo = lv->iSubItem + 1;
-				int* pOrderBy = (int*)GetProp(hWnd, TEXT("ORDERBY"));
-				int orderBy = *pOrderBy;
-				*pOrderBy = colNo == orderBy || colNo == -orderBy ? -orderBy : colNo;
-				SendMessage(hWnd, WMU_UPDATE_DATA, 0, 0);				
+				return SendMessage(hWnd, HIWORD(GetKeyState(VK_CONTROL)) ? WMU_HIDE_COLUMN : WMU_SORT_COLUMN, lv->iSubItem, 0);				
 			}			
 
 			if (pHdr->idFrom == IDC_GRID && (pHdr->code == (DWORD)NM_CLICK || pHdr->code == (DWORD)NM_RCLICK)) {
@@ -1040,9 +1036,25 @@ LRESULT CALLBACK cbNewMain(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 				}
 				
 				if (kd->wVKey == VK_LEFT || kd->wVKey == VK_RIGHT) {
-					int colCount = Header_GetItemCount(ListView_GetHeader(hGridWnd));
-					int colNo = *(int*)GetProp(hWnd, TEXT("CURRENTCOLNO")) + (kd->wVKey == VK_RIGHT ? 1 : -1);
-					colNo = colNo < 0 ? colCount - 1 : colNo > colCount - 1 ? 0 : colNo;
+					HWND hGridWnd = GetDlgItem(hWnd, IDC_GRID);
+					HWND hHeader = ListView_GetHeader(hGridWnd);
+
+					int colCount = Header_GetItemCount(ListView_GetHeader(pHdr->hwndFrom));
+					int colNo = *(int*)GetProp(hWnd, TEXT("CURRENTCOLNO"));
+
+					int* colOrder = calloc(colCount, sizeof(int));
+					Header_GetOrderArray(hHeader, colCount, colOrder);
+	
+					int dir = kd->wVKey == VK_RIGHT ? 1 : -1;
+					int idx = 0;
+					for (idx; colOrder[idx] != colNo; idx++);
+					do {
+						idx = (colCount + idx + dir) % colCount;
+					} while (ListView_GetColumnWidth(hGridWnd, colOrder[idx]) == 0);
+
+					colNo = colOrder[idx];
+					free(colOrder);
+
 					SendMessage(hWnd, WMU_SET_CURRENT_CELL, *(int*)GetProp(hWnd, TEXT("CURRENTROWNO")), colNo);
 					return TRUE;
 				}
@@ -1113,6 +1125,19 @@ LRESULT CALLBACK cbNewMain(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 			InvalidateRect(hGridWnd, NULL, TRUE);		
 		}
 		break;
+
+		// wParam = colNo
+		case WMU_SORT_COLUMN: {
+			int colNo = (int)wParam + 1;
+			if (colNo <= 0)
+				return FALSE;
+
+			int* pOrderBy = (int*)GetProp(hWnd, TEXT("ORDERBY"));
+			int orderBy = *pOrderBy;
+			*pOrderBy = colNo == orderBy || colNo == -orderBy ? -orderBy : colNo;
+			SendMessage(hWnd, WMU_UPDATE_DATA, 0, 0);				
+		}
+		break;	
 		
 		case WMU_EDIT_CELL: {
 			BOOL withText = (BOOL)wParam;
@@ -1487,7 +1512,7 @@ LRESULT CALLBACK cbNewMain(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 			*pFontSize += wParam;
 			DeleteFont(GetProp(hWnd, TEXT("FONT")));
 
-			HFONT hFont = CreateFont (*pFontSize, 0, 0, 0, FW_DONTCARE, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_SWISS, (TCHAR*)GetProp(hWnd, TEXT("FONTFAMILY")));
+			HFONT hFont = CreateFont (*pFontSize, 0, 0, 0, FW_DONTCARE, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_SWISS, (TCHAR*)GetProp(hWnd, TEXT("FONTFAMILY")));
 			HWND hListWnd = GetDlgItem(hWnd, IDC_TABLELIST);
 			HWND hGridWnd = GetDlgItem(hWnd, IDC_GRID);
 			SendMessage(hListWnd, WM_SETFONT, (LPARAM)hFont, TRUE);
@@ -1589,7 +1614,7 @@ LRESULT CALLBACK cbNewMain(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 			
 			if (wParam == VK_ESCAPE || wParam == VK_F11 ||
 				wParam == VK_F3 || wParam == VK_F5 || wParam == VK_F7 || (isCtrl && wParam == 0x46) || // Ctrl + F
-				((wParam >= 0x31 && wParam <= 0x38) && !getStoredValue(TEXT("disable-num-keys"), 0) || // 1 - 8
+				((wParam >= 0x31 && wParam <= 0x38) && !getStoredValue(TEXT("disable-num-keys"), 0) && !isCtrl || // 1 - 8
 				(wParam == 0x4E || wParam == 0x50) && !getStoredValue(TEXT("disable-np-keys"), 0) || // N, P
 				wParam == 0x51 && getStoredValue(TEXT("exit-by-q"), 0)) && // Q
 				(GetDlgCtrlID(GetFocus()) / 100 * 100 != IDC_HEADER_EDIT || GetDlgCtrlID(GetFocus()) == IDC_CELL_EDIT)) {
@@ -1609,6 +1634,32 @@ LRESULT CALLBACK cbNewMain(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 				keybd_event(wParam, wParam, KEYEVENTF_EXTENDEDKEY, 0);
 
 				return TRUE;
+			}
+
+			if (isCtrl && wParam >= 0x30 && wParam <= 0x39 && !getStoredValue(TEXT("disable-num-keys"), 0)) {// 0-9
+				HWND hGridWnd = GetDlgItem(hWnd, IDC_GRID);
+				HWND hHeader = ListView_GetHeader(hGridWnd);
+				int colCount = Header_GetItemCount(ListView_GetHeader(hGridWnd));
+
+				BOOL isCurrent = wParam == 0x30;
+				int colNo = isCurrent ? *(int*)GetProp(hWnd, TEXT("CURRENTCOLNO")) : wParam - 0x30 - 1;
+				if (colNo < 0 || colNo > colCount - 1 || isCurrent && ListView_GetColumnWidth(hGridWnd, colNo) == 0)
+					return FALSE;
+
+				if (!isCurrent) {
+					int* colOrder = calloc(colCount, sizeof(int));
+					Header_GetOrderArray(hHeader, colCount, colOrder);
+
+					int hiddenColCount = 0;
+					for (int idx = 0; (idx < colCount) && (idx - hiddenColCount <= colNo); idx++)
+						hiddenColCount += ListView_GetColumnWidth(hGridWnd, colOrder[idx]) == 0;
+
+					colNo = colOrder[colNo + hiddenColCount];
+					free(colOrder);
+				}
+				
+				SendMessage(hWnd, WMU_SORT_COLUMN, colNo, 0);
+				return TRUE;
 			}			
 			
 			return FALSE;					
@@ -1619,7 +1670,7 @@ LRESULT CALLBACK cbNewMain(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 			BOOL isCtrl = HIWORD(GetKeyState(VK_CONTROL));
 
 			unsigned char scancode = ((unsigned char*)&lParam)[2];
-			UINT key = MapVirtualKey(scancode,MAPVK_VSC_TO_VK);
+			UINT key = MapVirtualKey(scancode, MAPVK_VSC_TO_VK);
 
 			return !_istprint(wParam) && (
 				wParam == VK_ESCAPE || wParam == VK_F11 || wParam == VK_F1 ||
@@ -1874,43 +1925,56 @@ INT_PTR CALLBACK cbDlgAddRow(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) 
 					len += GetWindowTextLength(GetDlgItem(hWnd, IDC_DLG_LABEL + colNo)) + GetWindowTextLength(GetDlgItem(hWnd, IDC_DLG_EDIT + colNo)) + 10;
 					
 				char* query8 = (char*)calloc(len, sizeof(char));
-				sprintf(query8, "insert into \"%s\" (\"", tablename8);
+				sprintf(query8, "insert into \"%s\" (", tablename8);
+
+				int valCount = 0;
 				for (int colNo = 0; colNo < colCount; colNo++) {
+					if (!GetWindowTextLength(GetDlgItem(hWnd, IDC_DLG_EDIT + colNo)))
+						continue;
+
 					TCHAR colName16[255];
 					Header_GetItemText(hHeader, colNo, colName16, 255);
 					char* colName8 = utf16to8(colName16);
+					strcat(query8, valCount != 0 ? "\", \"" : "\"");
 					strcat(query8, colName8);
-					strcat(query8, colNo != colCount - 1 ? "\", \"" : "\") values (");
 					free(colName8);
+
+					valCount++;
 				}
+				strcat(query8, "\") values (");
 				
+				valCount = 0;
 				for (int colNo = 0; colNo < colCount; colNo++) {
 					int len = GetWindowTextLength(GetDlgItem(hWnd, IDC_DLG_EDIT + colNo)) + 1;
 					TCHAR value16[len + 1];
 					GetWindowText(GetDlgItem(hWnd, IDC_DLG_EDIT + colNo), value16, len);
 					
-					if (_tcslen(value16)) {
-						char* value8 = utf16to8(value16);
-						char* qvalue8 = (char*)calloc(2 * strlen(value8) + 1, sizeof(char));
-						int j = 0;
-						for (int i = 0; i < strlen(value8); i++) {
-							if (value8[i] == '\'') {
-								qvalue8[i + j] = value8[i];
-								j++;
-							}
+					if (!_tcslen(value16)) 
+						continue;
+
+					char* value8 = utf16to8(value16);
+					char* qvalue8 = (char*)calloc(2 * strlen(value8) + 1, sizeof(char));
+					int j = 0;
+					for (int i = 0; i < strlen(value8); i++) {
+						if (value8[i] == '\'') {
 							qvalue8[i + j] = value8[i];
-						}	
-						strcat(query8, "\'");
-						strcat(query8, qvalue8);
-						strcat(query8, "\'");
-						free(value8);
-						free(qvalue8);
-					} else {
-						strcat(query8, "null");
-					}
-					
-					strcat(query8, colNo != colCount - 1 ? ", " : ")");
+							j++;
+						}
+						qvalue8[i + j] = value8[i];
+					}	
+					strcat(query8, valCount != 0 ? ", " : "");
+					strcat(query8, "\'");
+					strcat(query8, qvalue8);
+					strcat(query8, "\'");
+					free(value8);
+					free(qvalue8);
+
+					valCount++;
 				}
+				strcat(query8, ")");
+
+				if (valCount == 0) 
+					sprintf(query8, "insert into \"%s\" default values", tablename8);
 
 				if (SQLITE_OK == sqlite3_exec(db, query8, 0, 0, 0)) {
 					free(query8);
@@ -1938,6 +2002,11 @@ INT_PTR CALLBACK cbDlgAddRow(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) 
 
 void bindValue(sqlite3_stmt* stmt, int i, const char* value8) {
 	int len = strlen(value8);
+	if (len == 0) {
+		sqlite3_bind_null(stmt, i);
+		return;
+	}
+
 	BOOL isNum = TRUE;
 	int dotCount = 0;
 	for (int i = +(value8[0] == '-' /* is negative */); i < len; i++) {
